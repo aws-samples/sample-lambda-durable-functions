@@ -91,17 +91,17 @@ sudo sh get-docker.sh
 docker run hello-world
 ```
 
-### 5. Node.js 22.x (for Lambda function)
+### 5. Node.js 24.x (for Lambda function)
 ```bash
 # Check if installed
 node --version
 
 # Install on macOS
-brew install node@22
+brew install node@24
 
 # Install on Linux (using nvm)
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-nvm install 22
+nvm install 24
 ```
 
 ### 6. jq (JSON processor for CLI output)
@@ -114,19 +114,6 @@ brew install jq
 
 # Install on Ubuntu/Debian
 sudo apt install jq
-```
-
-### THIS WILL BE REMOVED BEFORE RELEASE 
-### 7. AWS Durable Lambda CLI Extension
-
-```bash
-# Configure the custom durable-lambda service model
-aws configure add-model \
-  --service-model file://./service.json \
-  --service-name durable-lambda
-
-# Verify installation
-aws durable-lambda help
 ```
 
 ## Deployment
@@ -162,9 +149,9 @@ Check that both components are deployed:
 aws bedrock-agentcore list-runtimes --region us-east-1
 
 # Check Lambda function, update with the region you deployed to
-aws durable-lambda get-function \
+aws lambda get-function \
   --function-name fn-Fraud-Detection \
-  --region eu-south-1
+  --region us-east-2
 ```
 
 ## Usage
@@ -236,9 +223,9 @@ aws logs tail /aws/lambda/fn-Fraud-Detection \
 
 Option 2 - From Execution History:
 ```bash
-aws durable-lambda get-durable-execution-history \
+aws lambda get-durable-execution-history \
   --durable-execution-arn <ARN_FROM_INVOKE_OUTPUT> \
-  --region eu-south-1 \
+  --region us-east-2 \
   --include-execution-data
 ```
 
@@ -333,19 +320,19 @@ aws logs tail /aws/lambda/fn-Fraud-Detection \
 ### Check Execution Status
 ```bash
 # List all executions
-aws durable-lambda list-durable-executions-by-function \
+aws lambda list-durable-executions-by-function \
   --function-name fn-Fraud-Detection \
-  --region eu-south-1
+  --region us-east-2
 
 # Get specific execution details
-aws durable-lambda get-durable-execution \
+aws lambda get-durable-execution \
   --durable-execution-arn <ARN> \
-  --region eu-south-1
+  --region us-east-2
 
 # View execution history with data
-aws durable-lambda get-durable-execution-history \
+aws lambda get-durable-execution-history \
   --durable-execution-arn <ARN> \
-  --region eu-south-1 \
+  --region us-east-2 \
   --include-execution-data
 ```
 
@@ -376,8 +363,8 @@ Reference: [Bedrock AgentCore Runtime Permissions](https://docs.aws.amazon.com/b
 ## Configuration
 
 ### Lambda Function Settings
-- **Region**: `eu-south-1`
-- **Runtime**: Node.js 22.x
+- **Region**: `us-east-2`
+- **Runtime**: Node.js 24.x
 - **Timeout**: 120 seconds (per invocation)
 - **Execution Timeout**: 600 seconds (total durable execution)
 - **Memory**: 128 MB
@@ -413,9 +400,9 @@ To remove all deployed resources:
 
 ```bash
 # Delete Lambda function
-aws durable-lambda delete-function \
+aws lambda delete-function \
   --function-name fn-Fraud-Detection \
-  --region eu-south-1
+  --region us-east-2
 
 # Delete agent runtime
 aws bedrock-agentcore delete-runtime \

@@ -1,4 +1,4 @@
-# AWS Durable Functions - Fraud Detection Demo
+# AWS Durable Function with Amazon Bedrock Agent - Fraud Detection Demo
 
 This project demonstrates AWS Lambda Durable Functions integrated with AWS Bedrock AgentCore for intelligent fraud detection. It showcases a multi-step, stateful workflow that can run for extended periods (up to one year) with automatic state persistence, human-in-the-loop verification, and AI-powered risk scoring.
 
@@ -22,6 +22,11 @@ Transaction → Durable Lambda → Bedrock AgentCore Agent → Risk Score
               Score ≥ 5: Send to Fraud Department
 ```
 
+## Deployment Methods
+
+This project supports deployment through a SAM Template (Recommended) - Infrastructure as Code with CloudFormation
+
+
 ## Shell Compatibility
 
 ⚠️ **Important**: All scripts in this project are written for **Bash** and may not work with other shells (zsh, fish, etc.).
@@ -32,125 +37,98 @@ If you're on macOS Catalina or later (which defaults to zsh), you can:
 
 ## Prerequisites
 
-Ensure you have the following installed and configured:
+### Core Requirements
 
-### 1. Python 3.11+
+1. **AWS CLI v2** with configured credentials
+2. **Docker Desktop** - Required for building containers and layers
+3. **jq** - JSON processor for parsing outputs
+
+### For SAM Deployment (Recommended)
+
+4. **SAM CLI 1.51 or later** - [Installation Guide](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+
+
+### Installation Commands
+
 ```bash
-# Check if installed
-python3 --version
+# AWS CLI v2
+# macOS: brew install awscli
+# Linux: curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip awscliv2.zip && sudo ./aws/install
+aws configure  # Configure with your credentials
 
-# Install on macOS
-brew install python@3.11
+# Docker Desktop
+# macOS: brew install --cask docker
+# Linux: curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh
+docker run hello-world  # Verify installation
 
-# Install on Ubuntu/Debian
-sudo apt update && sudo apt install python3.11
-```
+# jq
+# macOS: brew install jq
+# Ubuntu/Debian: sudo apt install jq
 
-### 2. AWS CLI (configured with credentials)
-```bash
-# Check if installed
-aws --version
+# SAM CLI (for SAM deployment)
+# macOS: brew install aws-sam-cli
+# Linux: Follow AWS SAM CLI installation guide
 
-# Install on macOS
-brew install awscli
-
-# Install on Linux
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip
-sudo ./aws/install
-
-# Configure with your credentials
-aws configure
-```
-
-### 3. UV Package Manager (Python package manager)
-```bash
-# Check if installed
-uv --version
-
-# Install
+# Python 3.11+ and UV (for shell script deployment)
+# macOS: brew install python@3.11
+# Ubuntu/Debian: sudo apt update && sudo apt install python3.11
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Add to PATH (add to ~/.bashrc or ~/.zshrc)
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-### 4. Docker Desktop (required for building ARM64 container images)
-```bash
-# Check if installed
-docker --version
-
-# Install on macOS
-brew install --cask docker
-
-# Install on Linux
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-
-# Start Docker and verify
-docker run hello-world
-```
-
-### 5. Node.js 24.x (for Lambda function)
-```bash
-# Check if installed
-node --version
-
-# Install on macOS
-brew install node@24
-
-# Install on Linux (using nvm)
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-nvm install 24
-```
-
-### 6. jq (JSON processor for CLI output)
-```bash
-# Check if installed
-jq --version
-
-# Install on macOS
-brew install jq
-
-# Install on Ubuntu/Debian
-sudo apt install jq
+# Node.js 24.x (for shell script deployment)
+# macOS: brew install node@24
+# Linux: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash && nvm install 24
 ```
 
 ## Deployment
 
-### Step 1: Deploy the Complete Stack
-
-The main deployment script handles both the Bedrock AgentCore agent and the Lambda durable function:
+Deploy using Infrastructure as Code with AWS SAM:
 
 ```bash
-# Make script executable
-chmod +x deploy.sh
-
-# Deploy everything (agent + Lambda function)
-./deploy.sh
+# Quick deployment
+chmod +x deploy-sam.sh
+./deploy-sam.sh
 ```
 
-This script will:
-1. Deploy the Bedrock AgentCore fraud detection agent (containerized FastAPI app)
-2. Wait for the agent runtime to be ready
-3. Build and package the Lambda function with dependencies
-4. Create/update IAM roles with necessary permissions
-5. Deploy the durable Lambda function
-6. Publish a new version
+Or manually:
+```bash
+# Build the application
+sam build --use-container --parallel
+
+# Deploy with guided setup (first time)
+sam deploy --guided
+
+# Deploy with existing configuration
+sam deploy
+```
+
+### Deployment Process
+
+The following will install:
+1. **Build Agent Container**: Create and push Python FastAPI agent to ECR
+2. **Deploy Agent Runtime**: Create Bedrock AgentCore runtime with container
+3. **Create Infrastructure**: S3 bucket, IAM roles, Lambda layer
+4. **Deploy Lambda Function**: Durable function with proper configuration
+5. **Configure Permissions**: Set up cross-service permissions
+6. **Publish Version**: Create versioned deployment
 
 **Note**: First deployment takes ~5-10 minutes due to Docker image building and ECR push.
 
-### Step 2: Verify Deployment
+### Verify Deployment
 
 Check that both components are deployed:
 
 ```bash
-# Check agent runtime status, update with the region you deployed to
-aws bedrock-agentcore list-runtimes --region us-east-1
+# Check agent runtime status
+aws bedrock-agentcore-control list-agent-runtimes --region us-east-2
 
-# Check Lambda function, update with the region you deployed to
+# Check Lambda function
 aws lambda get-function \
   --function-name fn-Fraud-Detection \
+  --region us-east-2
+
+# For SAM deployments, check stack status
+aws cloudformation describe-stacks \
+  --stack-name fraud-detection-durable-function \
   --region us-east-2
 ```
 
@@ -254,29 +232,37 @@ The script will prompt you for:
 
 ```
 DFNs/
-├── deploy.sh                          # Main deployment script
+├── template.yaml                      # SAM template (Infrastructure as Code)
+├── samconfig.toml                     # SAM configuration
+├── deploy-sam.sh                      # SAM deployment script
 ├── invoke-function.sh                 # Interactive function invocation
 ├── send-callback.sh                   # Send callback responses
-├── service.json                       # AWS CLI durable-lambda service model
 ├── README.md                          # This file
 │
 ├── FraudDetection-Agent/              # Bedrock AgentCore Agent
 │   ├── agent.py                       # FastAPI fraud detection agent
 │   ├── Dockerfile                     # Container definition (ARM64)
-│   ├── deploy.sh                      # Agent deployment script
 │   ├── pyproject.toml                 # Python dependencies
 │   └── uv.lock                        # Package lock file
 │
 └── FraudDetection-Lambda/             # Durable Lambda Function
     ├── src/
     │   └── index.ts                   # Main Lambda handler 
-    ├── dist/
-    │   └── index.js                   # Node Coverted Lambda handler (created after deployment)
+    ├── dist/                          # Compiled JavaScript (created after build)
+    │   └── index.js                   
     ├── package.json                   # Node.js dependencies
-    ├── function.zip                   # Zip file for Lambda (created after deployment)
-    ├── layer.zip                      # Zip file for Lambda Layer (created after deployment)
+    ├── function.zip                   # Lambda deployment package (created after build)
+    ├── layer.zip                      # Lambda layer package (created after build)
     └── tsconfig.json                  # TypeScript configuration
 ```
+
+### Key Files
+
+- **`template.yaml`**: SAM/CloudFormation template defining all AWS resources
+- **`samconfig.toml`**: Configuration for SAM CLI (regions, parameters, etc.)
+- **`deploy-sam.sh`**: Automated SAM deployment with Docker image building
+- **`invoke-function.sh`**: Interactive script for testing transactions
+- **`send-callback.sh`**: Script for responding to human verification callbacks
 
 ## Key Features Demonstrated
 
@@ -340,7 +326,7 @@ aws lambda get-durable-execution-history \
 ```bash
 # View agent runtime logs
 aws logs tail /aws/bedrock-agentcore/runtimes/fraud_risk_scorer-<ID>-DEFAULT \
-  --region us-east-1 \
+  --region us-east-2 \
   --follow
 ```
 
@@ -362,20 +348,68 @@ Reference: [Bedrock AgentCore Runtime Permissions](https://docs.aws.amazon.com/b
 
 ## Configuration
 
-### Lambda Function Settings
-- **Region**: `us-east-2`
+### Default Settings
+
+The deployment creates resources with these default configurations:
+
+#### Lambda Function
+- **Name**: `fn-Fraud-Detection`
+- **Region**: `us-east-2` (configurable)
 - **Runtime**: Node.js 24.x
 - **Timeout**: 120 seconds (per invocation)
 - **Execution Timeout**: 600 seconds (total durable execution)
 - **Memory**: 128 MB
 - **Retention**: 7 days
+- **Layer**: `lr-FraudDetection`
 
-### Agent Settings
-- **Region**: `us-east-1`
+#### Bedrock AgentCore Agent
+- **Name**: `fraud_risk_scorer`
+- **Region**: `us-east-2` (required for Bedrock AgentCore)
 - **Runtime**: Python 3.11 (FastAPI + Uvicorn)
 - **Platform**: ARM64 (Graviton)
 - **Port**: 8080
 - **Endpoints**: `/invocations`, `/ping`
+- **ECR Repository**: `fraud-risk-scorer`
+
+#### IAM Roles
+- **Lambda Role**: `durable-function-execution-role`
+- **Agent Role**: `bedrock-agentcore-runtime-fraud-role`
+
+### Customizing Configuration
+
+#### SAM Template Parameters
+
+Edit `samconfig.toml` or override during deployment:
+
+```bash
+sam deploy --parameter-overrides \
+    FunctionName=my-fraud-function \
+    LambdaRegion=us-west-2 \
+    AgentRuntimeName=my_agent \
+    AgentRegion=us-east-1
+```
+
+Available parameters:
+- `FunctionName`: Lambda function name
+- `LayerName`: Lambda layer name
+- `RoleName`: Lambda execution role name
+- `AgentRuntimeName`: Bedrock AgentCore runtime name
+- `AgentRoleName`: Agent IAM role name
+- `ECRRepoName`: ECR repository name
+- `LambdaRegion`: Region for Lambda deployment
+- `AgentRegion`: Region for Bedrock AgentCore 
+
+#### Shell Script Variables
+
+Edit the variables at the top of `deploy.sh`:
+
+```bash
+FUNCTION_NAME="fn-Fraud-Detection"
+LAYER_NAME="lr-FraudDetection"
+REGION="us-east-2"
+ROLE_NAME="durable-function-execution-role"
+# ... other variables
+```
 
 ## Troubleshooting
 
@@ -396,7 +430,19 @@ Reference: [Bedrock AgentCore Runtime Permissions](https://docs.aws.amazon.com/b
 
 ## Cleanup
 
-To remove all deployed resources:
+### SAM Deployment Cleanup
+
+```bash
+# Delete entire stack (recommended)
+sam delete --stack-name fraud-detection-durable-function --region us-east-2
+
+# Or use CloudFormation directly
+aws cloudformation delete-stack \
+  --stack-name fraud-detection-durable-function \
+  --region us-east-2
+```
+
+### Shell Script Deployment Cleanup
 
 ```bash
 # Delete Lambda function
@@ -404,16 +450,23 @@ aws lambda delete-function \
   --function-name fn-Fraud-Detection \
   --region us-east-2
 
-# Delete agent runtime
-aws bedrock-agentcore delete-runtime \
-  --runtime-identifier <RUNTIME_ID> \
-  --region us-east-1
+# Delete agent runtime (get runtime ID from list-agent-runtimes)
+aws bedrock-agentcore-control delete-agent-runtime \
+  --agent-runtime-id <RUNTIME_ID> \
+  --region us-east-2
 
 # Delete S3 bucket (if desired)
 aws s3 rb s3://durable-functions-<ACCOUNT_ID> --force
 
-# Delete IAM role
+# Delete IAM roles
 aws iam delete-role --role-name durable-function-execution-role
+aws iam delete-role --role-name bedrock-agentcore-runtime-fraud-role
+
+# Delete ECR repository
+aws ecr delete-repository \
+  --repository-name fraud-risk-scorer \
+  --region us-east-2 \
+  --force
 ```
 
 ## Additional Resources

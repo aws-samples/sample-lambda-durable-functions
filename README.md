@@ -91,14 +91,110 @@ chmod +x deploy-sam.sh
 
 Or manually:
 ```bash
-# Build the application
-sam build --use-container --parallel
+# 1. Get AWS Account ID
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+LAMBDA_REGION="us-east-2"
+AGENT_REGION="us-east-2"
+ECR_REPO_NAME="fraud-risk-scorer"
+FUNCTION_NAME="fn-Fraud-Detection"
+LAYER_NAME="lr-FraudDetection"
 
-# Deploy with guided setup (first time)
-sam deploy --guided
+# 2. Build and push Docker image for Bedrock AgentCore agent
+cd FraudDetection-Agent
 
-# Deploy with existing configuration
-sam deploy
+# Create ECR repository if it doesn't exist
+aws ecr create-repository --repository-name $ECR_REPO_NAME --region $AGENT_REGION || true
+
+# Login to ECR
+aws ecr get-login-password --region $AGENT_REGION | \
+  docker login --username AWS --password-stdin \
+  $ACCOUNT_ID.dkr.ecr.$AGENT_REGION.amazonaws.com
+
+# Build and push ARM64 image
+docker buildx create --use --name sam-builder 2>/dev/null || docker buildx use sam-builder
+docker buildx build --platform linux/arm64 \
+  -t $ACCOUNT_ID.dkr.ecr.$AGENT_REGION.amazonaws.com/$ECR_REPO_NAME:latest \
+  --push .
+
+cd ..
+
+# 3. Build Lambda function and layer packages
+cd FraudDetection-Lambda
+
+# Clean and install dependencies
+rm -rf node_modules dist function.zip layer.zip || true
+npm install
+
+# Compile TypeScript
+tsc
+
+# Create function package
+cd dist && zip -qr ../function.zip . && cd ..
+zip -r function.zip package.json
+
+# Create layer package
+mkdir -p layer/nodejs
+cp -r node_modules layer/nodejs/
+cd layer && zip -qr ../layer.zip . && cd ..
+
+# 4. Create S3 bucket for deployment artifacts
+BUCKET_NAME="durable-functions-$ACCOUNT_ID"
+
+# Create bucket with proper configuration
+if [ "$LAMBDA_REGION" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket $BUCKET_NAME --region $LAMBDA_REGION
+else
+    aws s3api create-bucket --bucket $BUCKET_NAME --region $LAMBDA_REGION \
+        --create-bucket-configuration LocationConstraint=$LAMBDA_REGION
+fi
+
+# Enable versioning and encryption
+aws s3api put-bucket-versioning --bucket $BUCKET_NAME \
+    --versioning-configuration Status=Enabled --region $LAMBDA_REGION
+
+aws s3api put-bucket-encryption --bucket $BUCKET_NAME --region $LAMBDA_REGION \
+    --server-side-encryption-configuration '{
+        "Rules": [{
+            "ApplyServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+            }
+        }]
+    }'
+
+# Block public access
+aws s3api put-public-access-block --bucket $BUCKET_NAME --region $LAMBDA_REGION \
+    --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+# 5. Upload packages to S3
+aws s3 cp function.zip s3://$BUCKET_NAME/functions/$FUNCTION_NAME.zip --region $LAMBDA_REGION
+aws s3 cp layer.zip s3://$BUCKET_NAME/layers/$LAYER_NAME.zip --region $LAMBDA_REGION
+
+# Clean up build artifacts
+rm -rf node_modules dist layer function.zip layer.zip
+
+cd ..
+
+# 6. Deploy SAM application
+sam deploy \
+    --stack-name fraud-detection-durable-function \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --region $LAMBDA_REGION \
+    --parameter-overrides \
+        FunctionName=$FUNCTION_NAME \
+        LayerName=$LAYER_NAME \
+        RoleName=durable-function-execution-role \
+        AgentRuntimeName=fraud_risk_scorer \
+        AgentRoleName=bedrock-agentcore-runtime-fraud-role \
+        ECRRepoName=$ECR_REPO_NAME \
+        LambdaRegion=$LAMBDA_REGION \
+        AgentRegion=$AGENT_REGION \
+    --no-fail-on-empty-changeset
+
+# 7. Wait for deployment completion
+aws cloudformation wait stack-create-complete \
+    --stack-name fraud-detection-durable-function \
+    --region $LAMBDA_REGION
 ```
 
 ### Deployment Process

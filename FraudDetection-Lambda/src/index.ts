@@ -93,7 +93,7 @@ class fraudTransaction implements transaction {
 
 
 export const handler = withDurableExecution(async (event: transaction, context: DurableContext) => {
-    
+
     // Extract transaction information
     const tx = new fraudTransaction(event.id, event.amount, event.location, event.vendor, event?.score ?? 0)
 
@@ -141,62 +141,91 @@ export const handler = withDurableExecution(async (event: transaction, context: 
         }else{
             return tx.score;
         }
-  });
+    });
   
-console.log("Transaction Score = " + tx.score.toString());
+    console.log("Transaction Score = " + tx.score.toString());
 
-  //Low Risk, Authorize Transaction
-  if (tx.score < 3) return context.step("Authorize", async() => await tx.authorize(tx));
-  if (tx.score >= 5) return context.step("sendToFraud", async() => await tx.sendToFraud(tx));  //High Risk, Send to Fraud Department
-  
-  //Potential Fraud Detected
-  if (tx.score > 2 && tx.score < 5){
+    //Low Risk, Authorize Transaction
+    if (tx.score < 3) return context.step("Authorize", async() => await tx.authorize(tx));
+    if (tx.score >= 5) return context.step("sendToFraud", async() => await tx.sendToFraud(tx));  //High Risk, Send to Fraud Department
+    
+    //Potential Fraud Detected
+    if (tx.score > 2 && tx.score < 5){
 
-    //Step 2: Suspend the transaction 
-    const tx_suspended = await context.step("suspendTransaction", async () => await tx.suspend(tx));
+        //Step 2: Suspend the transaction 
+        const tx_suspended = await context.step("suspendTransaction", async () => await tx.suspend(tx));
 
-    //Step 3: Ask cardholder to authorize transaction
-    const verified = await context.parallel("human-verification", [
-         // Push verification with callback
-        (ctx: DurableContext) => ctx.waitForCallback("SendVerificationEmail", async (callbackId: string) => {
-            await tx.sendCustomerNotification(callbackId, 'email', tx);  
-        }, { timeout: { days: 1 } }),
-        // SMS verification with callback
-        (ctx: DurableContext) => ctx.waitForCallback("SendVerificationSMS", async (callbackId: string) => {
-            await tx.sendCustomerNotification(callbackId, 'sms', tx); 
-        }, { timeout: { days: 1 } })
-    ],
-      {
-        maxConcurrency: 2,
-        completionConfig: {
-            minSuccessful: 1, // Continue after cardholder verifies (email or sms)
-            toleratedFailureCount: 0 // Fail immediately if any callback fails
-        }
-      }
-    );
+        //Step 3: Ask cardholder to authorize transaction
+        const verified = await context.parallel("human-verification", [
+            // Push verification with callback
+            (ctx: DurableContext) => ctx.step("emailVerification", async () => {
+                // Timeouts will throw an error.  We need to handle timeout errors to complete the checkpoint and gracefully proceed.  No response means transaction was not approved by customer and is unauthorized.
+                try {
+                    const result = await ctx.waitForCallback("SendVerificationEmail", async (callbackId: string) => {
+                        await tx.sendCustomerNotification(callbackId, 'email', tx);  
+                    }, { timeout: { days: 1 } });
+                    return { success: true, channel: 'email', result };
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    if(errorMessage.includes("timeout")){
+                        console.log(`Email verification timed out or failed: ${errorMessage}`);
+                        return { success: false, channel: 'email', error: 'timeout' };
+                    }
+                    throw error;
+                }
+            }),
+            // SMS verification with callback
+            (ctx: DurableContext) => ctx.step("smsVerification", async () => {
+                try {
+                    const result = await ctx.waitForCallback("SendVerificationSMS", async (callbackId: string) => {
+                        await tx.sendCustomerNotification(callbackId, 'sms', tx); 
+                    }, { timeout: { days: 1 } });
+                    return { success: true, channel: 'sms', result };
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    if(errorMessage.includes("timeout")){
+                        console.log(`SMS verification timed out or failed: ${errorMessage}`);
+                        return { success: false, channel: 'sms', error: 'timeout' };
+                    }
+                    throw error;
+                }
+            })
+            ],
+            {
+                maxConcurrency: 2,
+                completionConfig: {
+                    minSuccessful: 1, // Continue after cardholder verifies (email or sms)
+                    toleratedFailureCount: 1 // Allow one timeout/failure if timeouts differ between notification channels
+                }
+            }
+        );
 
-    //Step 4: Authorize Transaction or Send to Fraud Department
-    const result = await context.step("advanceTransaction", async () => {
-        // Check if verification succeeded (at least one callback succeeded)
-        // Use hasFailure to check if any verification failed
-        if(!verified.hasFailure && verified.successCount > 0){
-            return await tx.authorize(tx, true);
-        }else{
-            // Verification failed or was rejected - send to fraud department
-            return await tx.sendToFraud(tx, true);
-        }
-    })
+        //Step 4: Authorize Transaction or Send to Fraud Department
+        const result = await context.step("advanceTransaction", async () => {
+            // Check if at least one verification succeeded
+            const hasSuccessfulVerification = verified.results.some(
+                (r: any) => r.success === true
+            );
+            
+            if(hasSuccessfulVerification){
+                // Customer approved via email or SMS
+                return await tx.authorize(tx, true);
+            }else{
+                // Both verifications timed out or customer rejected - send to fraud department
+                return await tx.sendToFraud(tx, true);
+            }
+        })
 
     return result;
   }
 
-  return {
-            statusCode: 400, 
-            body: {
-                transaction_id: tx.id, 
-                amount: tx.amount, 
-                fraud_score: tx.score, 
-                result: 'Unknown'
-            }
-        };;
+    return {
+        statusCode: 400, 
+        body: {
+            transaction_id: tx.id, 
+            amount: tx.amount, 
+            fraud_score: tx.score, 
+            result: 'Unknown'
+        }
+    };;
 });

@@ -1,0 +1,47 @@
+# IDE and Editor folders
+.vscode/
+.kiro/
+
+# macOS
+.DS_Store
+
+# Node modules
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.js
+*.d.ts
+*.js.map
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# Lambda packages
+*.zip
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment variables
+.env
+.env.local
+
+# AWS SAM
+.aws-sam/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Lock files (optional - uncomment if you want to ignore)
+# package-lock.json
+# uv.lock

@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@aws/durable-execution-sdk-js": "^1.0.0",
-    "@aws-sdk/client-bedrock-agentcore": "^3.935.0"
+    "@aws-sdk/client-bedrock-agentcore": "^3.987.0"
   },
   "description": ""
 }

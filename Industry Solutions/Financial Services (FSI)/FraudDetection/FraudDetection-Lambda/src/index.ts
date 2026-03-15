@@ -146,17 +146,20 @@ export const handler = withDurableExecution(async (event: transaction, context: 
     console.log("Transaction Score = " + tx.score.toString());
 
     //Low Risk, Authorize Transaction
-    if (tx.score < 3) return context.step("Authorize", async() => await tx.authorize(tx));
-    if (tx.score >= 5) return context.step("sendToFraud", async() => await tx.sendToFraud(tx));  //High Risk, Send to Fraud Department
-    
+    if (tx.score < 3) return context.step(`authorize-${tx.id}`, async() => await tx.authorize(tx));
+    if (tx.score >= 5) return context.step(`sendToFraudDepartment-${tx.id}`, async() => await tx.sendToFraud(tx));  //High Risk, Send to Fraud Department
+
     //Potential Fraud Detected
     if (tx.score > 2 && tx.score < 5){
 
-        //Step 2: Suspend the transaction 
-        const tx_suspended = await context.step("suspendTransaction", async () => await tx.suspend(tx));
+        //Step 2: Suspend the transaction
+        const tx_suspended = await context.step(`suspend-${tx.id}`, async () => await tx.suspend(tx));
 
         //Step 3: Ask cardholder to authorize transaction
-        const verified = await context.parallel("human-verification", [
+        // Add outer try/catch for timeout handling while keeping inner error handling
+        let verified;
+        try {
+            verified = await context.parallel("human-verification", [
             // Push verification with callback
             (ctx: DurableContext) => ctx.step("emailVerification", async () => {
                 // Timeouts will throw an error.  We need to handle timeout errors to complete the checkpoint and gracefully proceed.  No response means transaction was not approved by customer and is unauthorized.
@@ -199,12 +202,27 @@ export const handler = withDurableExecution(async (event: transaction, context: 
                 }
             }
         );
+        } catch (error) {
+            // Outer catch for overall parallel execution failure
+            const isTimeout = (error instanceof Error && error.message?.includes("timeout")) ||
+                            (typeof error === 'string' && error.includes("timeout"));
+            if (isTimeout) {
+                context.logger.warn("Customer verification timeout - no response received", { error, txId: tx.id });
+                // Escalate to fraud department when no response received within timeout
+                return await context.step(`timeout-escalate-${tx.id}`, async () =>
+                    tx.sendToFraud(tx, true)
+                );
+            }
+            // Re-throw non-timeout errors to be handled by durable execution retry
+            throw error;
+        }
 
         //Step 4: Authorize Transaction or Send to Fraud Department
-        const result = await context.step("advanceTransaction", async () => {
+        const result = await context.step(`advanceTransaction-${tx.id}`, async () => {
             // Check if at least one verification succeeded
-            const hasSuccessfulVerification = verified.results.some(
-                (r: any) => r.success === true
+            // Use succeeded() method to get items that completed successfully
+            const hasSuccessfulVerification = verified.succeeded().some(
+                (item) => item.result.success === true
             );
             
             if(hasSuccessfulVerification){

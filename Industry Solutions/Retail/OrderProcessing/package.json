@@ -1,0 +1,32 @@
+{
+    "name": "order-processing",
+    "version": "0.1.0",
+    "bin": {
+        "order-processing": "bin/order-processing.js"
+    },
+    "scripts": {
+        "build": "tsc",
+        "watch": "tsc -w",
+        "test": "jest --config jest.config.js",
+        "test:cloud": "jest --config jest.cloud.config.js",
+        "cdk": "cdk"
+    },
+    "devDependencies": {
+        "@aws/durable-execution-sdk-js-eslint-plugin": "^1.0.0",
+        "@aws/durable-execution-sdk-js-testing": "^1.0.0",
+        "@types/jest": "^29.5.14",
+        "@types/node": "^24.10.1",
+        "jest": "^29.7.0",
+        "ts-jest": "^29.2.5",
+        "aws-cdk": "2.1111.0",
+        "ts-node": "^10.9.2",
+        "typescript": "~5.9.3"
+    },
+    "dependencies": {
+        "aws-cdk-lib": "2.243.0",
+        "constructs": "^10.0.0",
+        "@aws/durable-execution-sdk-js": "^1.0.0",
+        "@aws-sdk/client-bedrock-runtime": "^3.1011.0",
+        "esbuild": "^0.25.0"
+    }
+}

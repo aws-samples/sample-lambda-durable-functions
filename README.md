@@ -4,12 +4,20 @@ This repository contains example projects demonstrating AWS Durable Functions - 
 
 ## Table of Contents
 
-- [About this Repo](#about-this-repo)
-- [What are Durable Functions?](#what-are-durable-functions)
-- [Examples](#examples)
-- [Getting Started](#getting-started)
-- [Learning Resources](#learning-resources)
-- [License](#license)
+- [AWS Durable Functions Examples](#aws-durable-functions-examples)
+  - [Table of Contents](#table-of-contents)
+  - [About this Repo](#about-this-repo)
+  - [What are Durable Functions?](#what-are-durable-functions)
+  - [Examples](#examples)
+    - [Financial Services (FSI)](#financial-services-fsi)
+    - [Retail](#retail)
+    - [Coming Soon](#coming-soon)
+  - [Getting Started](#getting-started)
+    - [Prerequisites](#prerequisites)
+  - [Learning Resources](#learning-resources)
+    - [Official Resources](#official-resources)
+    - [Example Documentation](#example-documentation)
+  - [License](#license)
 
 ## About this Repo
 
@@ -45,54 +53,21 @@ Examples are organized by industry vertical to demonstrate domain-specific use c
 |---------|-------------|--------------|
 | [Fraud Detection](./Industry/Financial%20Services%20(FSI)/FraudDetection/) | Multi-step transaction processing with risk scoring, human-in-the-loop verification, and conditional workflow branching | Lambda, TypeScript, AWS CDK, SAM |
 
+### Retail
+
+| Example | Description | Technologies |
+|---------|-------------|--------------|
+| [Order Processing](./Industry%20Solutions/Retail/OrderProcessing/) | Multi-step order workflow with AI validation (Bedrock), saga compensation, inventory management, and human-in-the-loop payment approval | Lambda, TypeScript, AWS CDK, Bedrock |
+
 ### Coming Soon
 
-Additional industry verticals and use cases will be added overtime.
+Additional industry verticals and use cases will be added over time.
 
 ## Getting Started
 
 ### Prerequisites
 
 Review the README found within the folder of each sample.  Each sample has its own unique set of requirements.
-
-### Quick Start
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd <repository-name>
-   ```
-
-2. **Configure the custom CLI model** (enables `aws durable-lambda` commands)
-   ```bash
-   aws configure add-model --service-model file://./service.json --service-name durable-lambda
-   ```
-
-3. **Navigate to an example**
-   ```bash
-   cd "Industry/Financial Services (FSI)/FraudDetection"
-   ```
-
-4. **Follow the example's README** for deployment instructions
-
-### Common Commands
-
-```bash
-# Deploy a CDK-based example
-cdk bootstrap aws://<ACCOUNT_ID>/<REGION>
-cdk deploy
-
-# Deploy a SAM-based example
-sam build
-sam deploy --guided
-
-# Invoke a durable function
-aws durable-lambda invoke --function-name <arn> --region <region> ./output
-
-# List executions
-aws durable-lambda list-durable-executions-by-function \
-  --function-name <name> --status-filter SUCCEEDED --region <region>
-```
 
 ## Learning Resources
 

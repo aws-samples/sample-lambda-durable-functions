@@ -46,10 +46,10 @@ Parameters:
   
   ExecutionTimeout:
     Type: Number
-    Default: 600
+    Default: 90000
     MinValue: 1
     MaxValue: 31622400
-    Description: 'Durable execution timeout in seconds (max 1 year)'
+    Description: 'Durable execution timeout in seconds (max 1 year). Must exceed longest callback timeout (e.g., 25 hours > 1 day callback).'
   
   RetentionPeriodInDays:
     Type: Number

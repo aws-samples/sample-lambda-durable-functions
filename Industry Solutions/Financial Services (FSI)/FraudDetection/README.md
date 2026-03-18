@@ -258,26 +258,31 @@ The script will prompt you for:
 
 ### Example Invocations
 
+> **Note**: The invoke script uses `--invocation-type Event` (asynchronous) and `--durable-execution-name "tx-${TX_ID}"` for idempotency. Results are not returned immediately — monitor execution status via CloudWatch logs or execution history.
+
 **Low Risk Transaction (Auto-Approve)**:
 ```bash
 ./invoke-function.sh
 # Enter amount: 500
-# Result: Automatically authorized (score < 3)
+# The agent assigns score < 3 → transaction is automatically authorized
 ```
 
 **High Risk Transaction (Auto-Reject)**:
 ```bash
 ./invoke-function.sh
 # Enter amount: 10000
-# Result: Sent to fraud department (score 5)
+# The agent assigns score 5 → sent to fraud department
 ```
 
 **Medium Risk Transaction (Human Verification)**:
 ```bash
 ./invoke-function.sh
 # Enter amount: 6500
-# Result: Triggers email/SMS verification callbacks (score 3)
+# The agent assigns score 3 → triggers email/SMS verification callbacks
+# Use send-callback.sh to approve or reject
 ```
+
+**Idempotency**: Invoking again with the same transaction ID (and payload) returns the existing execution rather than creating a duplicate.
 
 ### Handling Human-in-the-Loop Callbacks
 
@@ -291,7 +296,7 @@ When a transaction requires human verification (risk score 3-4), the function wi
 Option 1 - From CloudWatch Logs:
 ```bash
 aws logs tail /aws/lambda/fn-Fraud-Detection \
-  --region eu-south-1 \
+  --region us-east-2 \
   --follow
 ```
 
@@ -320,9 +325,9 @@ The script will prompt you for:
    - `2` = Failure (reject transaction)
 
 **Callback Behavior**:
-- If **either** email or SMS is approved → Transaction is authorized
-- If **any** callback fails/rejects → Transaction is sent to fraud department
-- The parallel execution uses `toleratedFailureCount: 0`, so any failure immediately escalates
+- If **either** email or SMS is approved → Transaction is authorized (first-response-wins pattern)
+- If **both** channels time out with no response → Transaction is escalated to fraud department
+- The parallel execution uses `minSuccessful: 1`, so the workflow continues as soon as either channel succeeds
 
 ## Project Structure
 
@@ -343,9 +348,11 @@ DFNs/
 │
 └── FraudDetection-Lambda/             # Durable Lambda Function
     ├── src/
-    │   └── index.ts                   # Main Lambda handler 
+    │   ├── index.ts                   # Main Lambda handler 
+    │   └── index.test.ts              # Unit tests (LocalDurableTestRunner)
     ├── dist/                          # Compiled JavaScript (created after build)
     │   └── index.js                   
+    ├── jest.config.js                 # Jest test configuration
     ├── package.json                   # Node.js dependencies
     ├── function.zip                   # Lambda deployment package (created after build)
     ├── layer.zip                      # Lambda layer package (created after build)
@@ -376,8 +383,8 @@ DFNs/
 
 ### 3. Human-in-the-Loop
 - **Parallel Callbacks**: Email and SMS verification run concurrently (MOCKED: no actual email/SMS messages are sent)
-- **Flexible Completion**: Succeeds when either channel approves
-- **Failure Handling**: Immediately escalates if any verification fails
+- **Flexible Completion**: First-response-wins — succeeds when either channel approves
+- **Timeout Handling**: Escalates to fraud department if no response is received within the timeout period
 
 ### 4. Workflow Orchestration
 - **Conditional Branching**: Different paths based on risk score
@@ -390,12 +397,12 @@ DFNs/
 ```bash
 # Tail logs in real-time
 aws logs tail /aws/lambda/fn-Fraud-Detection \
-  --region eu-south-1 \
+  --region us-east-2 \
   --follow
 
 # View recent logs
 aws logs tail /aws/lambda/fn-Fraud-Detection \
-  --region eu-south-1 \
+  --region us-east-2 \
   --since 1h
 ```
 
@@ -453,7 +460,7 @@ The deployment creates resources with these default configurations:
 - **Region**: `us-east-2` (configurable)
 - **Runtime**: Node.js 24.x
 - **Timeout**: 120 seconds (per invocation)
-- **Execution Timeout**: 600 seconds (total durable execution)
+- **Execution Timeout**: 90000 seconds / 25 hours (total durable execution, must exceed longest callback timeout)
 - **Memory**: 128 MB
 - **Retention**: 7 days
 - **Layer**: `lr-FraudDetection`
@@ -497,7 +504,7 @@ Available parameters:
 
 #### Shell Script Variables
 
-Edit the variables at the top of `deploy.sh`:
+Edit the variables at the top of `deploy-sam.sh`:
 
 ```bash
 FUNCTION_NAME="fn-Fraud-Detection"
@@ -564,6 +571,36 @@ aws ecr delete-repository \
   --region us-east-2 \
   --force
 ```
+
+## Testing
+
+The project includes unit tests using the `LocalDurableTestRunner` from the durable functions testing library. Tests run locally without deploying to AWS.
+
+### Running Tests
+
+```bash
+cd FraudDetection-Lambda
+
+# Install dependencies (if not already installed)
+npm install
+
+# Run tests
+npm test
+```
+
+### Test Coverage
+
+The test suite covers all three business logic branches:
+
+| Scenario | Score | Expected Behavior |
+|----------|-------|-------------------|
+| Low risk (auto-approve) | 1, 2 | `fraudCheck` → `authorize` step |
+| High risk (auto-escalate) | 5 | `fraudCheck` → `sendToFraudDepartment` step |
+| Medium risk (email callback) | 3 | `fraudCheck` → `suspend` → parallel callbacks → `finalize` |
+| Medium risk (SMS callback) | 4 | `fraudCheck` → `suspend` → parallel callbacks → `finalize` |
+| Parallel structure | 3 | Verifies `human-verification` parallel operation exists |
+
+Tests use the `score` field in the event payload to bypass the Bedrock agent call, allowing deterministic testing of all workflow branches. The callback tests use `waitForData(WaitingOperationStatus.STARTED)` and `sendCallbackSuccess()` to simulate customer responses.
 
 ## Additional Resources
 

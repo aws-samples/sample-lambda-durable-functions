@@ -29,6 +29,6 @@ parameter_overrides = [
     "ECRRepoName=fraud-risk-scorer",
     "LambdaRegion=us-east-2",
     "AgentRegion=us-east-1",
-    "ExecutionTimeout=600",
+    "ExecutionTimeout=90000",
     "RetentionPeriodInDays=7"
 ]

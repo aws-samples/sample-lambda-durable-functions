@@ -63,12 +63,20 @@ EOF
 )
 
 
-echo "🚀 Invoking durable function..."
+echo "🚀 Invoking durable function asynchronously..."
+echo "   Using durable-execution-name: tx-${TX_ID} (idempotent)"
 echo ""
 
 # INVOKE THE FUNCTION
+# Best practices:
+# - --invocation-type Event: Async invocation for long-running workflows (enables waits > 15 min)
+# - --durable-execution-name: Ensures idempotency per transaction ID
+# - --cli-binary-format raw-in-base64-out: Avoids base64 encoding issues with JSON payloads
 INVOKE_OUTPUT=$(aws lambda invoke \
     --function-name "$FUNCTION_ARN:\$LATEST" \
+    --invocation-type Event \
+    --durable-execution-name "tx-${TX_ID}" \
+    --cli-binary-format raw-in-base64-out \
     --payload "$PAYLOAD" \
     --region $REGION \
     response.json 2>&1)
@@ -102,6 +110,9 @@ if [ ! -z "$DURABLE_EXECUTION_ARN" ]; then
     echo ""
 fi
 
+echo ""
+echo "💡 Idempotency: Invoking again with the same transaction ID ($TX_ID) will"
+echo "   return the existing execution rather than creating a duplicate."
 echo ""
 echo "🔍 View CloudWatch Logs:"
 echo "   aws logs tail /aws/lambda/$FUNCTION_NAME --region $REGION --follow"

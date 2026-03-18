@@ -2,8 +2,13 @@
   "compilerOptions": {
     "target": "es2021",
     "module": "nodenext",
-    "lib": ["es2021"],
-    "types": ["node"],
+    "lib": [
+      "es2021"
+    ],
+    "types": [
+      "node",
+      "jest"
+    ],
     "strict": true,
     "moduleResolution": "nodenext",
     "esModuleInterop": true,
@@ -13,6 +18,10 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }

@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Healthcare Prior Authorization — Multi-Agent Durable Function with AgentCore
+  Deploys the durable Lambda coordinator + 5 AgentCore specialist runtimes.
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Architectures: [arm64]
+    Timeout: 900
+    MemorySize: 2048
+
+Resources:
+  # ─── IAM Role for AgentCore runtimes ────────────────────────────────────────
+  AgentCoreRuntimeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: healthcare-pa-agentcore-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
+      Policies:
+        - PolicyName: DurableCallbackPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:SendDurableExecutionCallbackSuccess
+                  - lambda:SendDurableExecutionCallbackFailure
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:healthcare-pa-coordinator:*'
+        - PolicyName: ECRPullPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/healthcare-pa/*'
+
+  # ─── AgentCore Runtimes ─────────────────────────────────────────────────────
+  DocumentAgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: healthcare_pa_document_agent
+      Description: Extracts clinical facts and determines specialist routing
+      RoleArn: !GetAtt AgentCoreRuntimeRole.Arn
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/healthcare-pa/document-agent:latest'
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      EnvironmentVariables:
+        AWS_REGION: !Ref AWS::Region
+
+  EligibilityAgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: healthcare_pa_eligibility_agent
+      Description: Verifies patient insurance coverage and benefits
+      RoleArn: !GetAtt AgentCoreRuntimeRole.Arn
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/healthcare-pa/eligibility-agent:latest'
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      EnvironmentVariables:
+        AWS_REGION: !Ref AWS::Region
+
+  PolicyAgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: healthcare_pa_policy_agent
+      Description: Retrieves and interprets payer medical policy
+      RoleArn: !GetAtt AgentCoreRuntimeRole.Arn
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/healthcare-pa/policy-agent:latest'
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      EnvironmentVariables:
+        AWS_REGION: !Ref AWS::Region
+
+  MedicalNecessityAgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: healthcare_pa_medical_necessity_agent
+      Description: Compares clinical evidence against policy criteria
+      RoleArn: !GetAtt AgentCoreRuntimeRole.Arn
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/healthcare-pa/medical-necessity-agent:latest'
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      EnvironmentVariables:
+        AWS_REGION: !Ref AWS::Region
+
+  SynthesisAgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: healthcare_pa_synthesis_agent
+      Description: Combines specialist findings into unified PA recommendation
+      RoleArn: !GetAtt AgentCoreRuntimeRole.Arn
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/healthcare-pa/synthesis-agent:latest'
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      EnvironmentVariables:
+        AWS_REGION: !Ref AWS::Region
+
+  # ─── Durable Lambda Coordinator ─────────────────────────────────────────────
+  CoordinatorFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - DocumentAgentRuntime
+      - EligibilityAgentRuntime
+      - PolicyAgentRuntime
+      - MedicalNecessityAgentRuntime
+      - SynthesisAgentRuntime
+    Properties:
+      FunctionName: healthcare-pa-coordinator
+      Handler: src/handlers/coordinator.handler
+      DurableConfig:
+        ExecutionTimeout: 1209600  # 14 days
+        RetentionPeriodInDays: 30
+      Environment:
+        Variables:
+          DOCUMENT_AGENT_ARN: !GetAtt DocumentAgentRuntime.AgentRuntimeArn
+          ELIGIBILITY_AGENT_ARN: !GetAtt EligibilityAgentRuntime.AgentRuntimeArn
+          POLICY_AGENT_ARN: !GetAtt PolicyAgentRuntime.AgentRuntimeArn
+          MEDICAL_NECESSITY_AGENT_ARN: !GetAtt MedicalNecessityAgentRuntime.AgentRuntimeArn
+          SYNTHESIS_AGENT_ARN: !GetAtt SynthesisAgentRuntime.AgentRuntimeArn
+      Policies:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicDurableExecutionRolePolicy
+        - Statement:
+            - Effect: Allow
+              Action: bedrock-agentcore:InvokeAgentRuntime
+              Resource:
+                - !GetAtt DocumentAgentRuntime.AgentRuntimeArn
+                - !GetAtt EligibilityAgentRuntime.AgentRuntimeArn
+                - !GetAtt PolicyAgentRuntime.AgentRuntimeArn
+                - !GetAtt MedicalNecessityAgentRuntime.AgentRuntimeArn
+                - !GetAtt SynthesisAgentRuntime.AgentRuntimeArn
+      AutoPublishAlias: live
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        EntryPoints: [src/handlers/coordinator.ts]
+
+  CoordinatorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/healthcare-pa-coordinator
+      RetentionInDays: 30
+
+Outputs:
+  CoordinatorFunctionArn:
+    Description: Qualified ARN for invoking the PA coordinator
+    Value: !Sub '${CoordinatorFunction.Arn}:live'
+  DocumentAgentArn:
+    Value: !GetAtt DocumentAgentRuntime.AgentRuntimeArn
+  EligibilityAgentArn:
+    Value: !GetAtt EligibilityAgentRuntime.AgentRuntimeArn
+  PolicyAgentArn:
+    Value: !GetAtt PolicyAgentRuntime.AgentRuntimeArn
+  MedicalNecessityAgentArn:
+    Value: !GetAtt MedicalNecessityAgentRuntime.AgentRuntimeArn
+  SynthesisAgentArn:
+    Value: !GetAtt SynthesisAgentRuntime.AgentRuntimeArn

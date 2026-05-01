@@ -16,7 +16,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 logger = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
-lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 SYSTEM_PROMPT = """You are a healthcare eligibility verification specialist.
 
@@ -27,11 +27,12 @@ Given a patient ID, payer, and procedure code, verify:
 
 Use the check_eligibility tool to query the payer system and report_eligibility to return results."""
 
+_last_tool_result = {}
+
 
 @tool
 def check_eligibility(patient_id: str, payer_id: str, procedure_code: str) -> dict:
     """Query payer eligibility system (X12 270/271 transaction)."""
-    # In production: call payer API or clearinghouse
     return {
         "eligible": True,
         "planId": f"PLAN-{payer_id}-001",
@@ -44,12 +45,16 @@ def check_eligibility(patient_id: str, payer_id: str, procedure_code: str) -> di
 @tool
 def report_eligibility(eligible: bool, plan_id: str, coverage_details: str) -> dict:
     """Report eligibility findings back to the coordinator."""
-    return {"eligible": eligible, "planId": plan_id, "coverageDetails": coverage_details}
+    global _last_tool_result
+    _last_tool_result = {"eligible": eligible, "planId": plan_id, "coverageDetails": coverage_details}
+    return _last_tool_result
 
 
 def run_agent(payload: dict, callback_id: str, task_id: str):
+    global _last_tool_result
     try:
-        model = BedrockModel(model_id="anthropic.claude-haiku-4-5-20251001-v1:0", max_tokens=2048)
+        _last_tool_result = {}
+        model = BedrockModel(model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0", max_tokens=2048)
         agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=[check_eligibility, report_eligibility])
 
         prompt = (
@@ -59,7 +64,7 @@ def run_agent(payload: dict, callback_id: str, task_id: str):
         )
 
         result = agent(prompt)
-        answer = result.tool_results[-1] if result.tool_results else {"eligible": True, "planId": "unknown", "coverageDetails": str(result)}
+        answer = _last_tool_result if _last_tool_result else json.loads(str(result))
 
         lambda_client.send_durable_execution_callback_success(
             CallbackId=callback_id, Result=json.dumps(answer)

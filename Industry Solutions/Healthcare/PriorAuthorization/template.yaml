@@ -27,6 +27,16 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
       Policies:
+        - PolicyName: CloudWatchLogsPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*'
         - PolicyName: DurableCallbackPermissions
           PolicyDocument:
             Version: '2012-10-17'
@@ -150,10 +160,15 @@ Resources:
               Action: bedrock-agentcore:InvokeAgentRuntime
               Resource:
                 - !GetAtt DocumentAgentRuntime.AgentRuntimeArn
+                - !Sub '${DocumentAgentRuntime.AgentRuntimeArn}/*'
                 - !GetAtt EligibilityAgentRuntime.AgentRuntimeArn
+                - !Sub '${EligibilityAgentRuntime.AgentRuntimeArn}/*'
                 - !GetAtt PolicyAgentRuntime.AgentRuntimeArn
+                - !Sub '${PolicyAgentRuntime.AgentRuntimeArn}/*'
                 - !GetAtt MedicalNecessityAgentRuntime.AgentRuntimeArn
+                - !Sub '${MedicalNecessityAgentRuntime.AgentRuntimeArn}/*'
                 - !GetAtt SynthesisAgentRuntime.AgentRuntimeArn
+                - !Sub '${SynthesisAgentRuntime.AgentRuntimeArn}/*'
       AutoPublishAlias: live
     Metadata:
       BuildMethod: esbuild

@@ -16,7 +16,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 logger = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
-lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 SYSTEM_PROMPT = """You are a medical policy interpretation specialist.
 
@@ -27,11 +27,12 @@ Given a payer, procedure code, and diagnosis code:
 
 Use lookup_policy to query the policy database and report_policy to return findings."""
 
+_last_tool_result = {}
+
 
 @tool
 def lookup_policy(payer_id: str, procedure_code: str, diagnosis_code: str) -> dict:
     """Query payer medical policy database."""
-    # In production: call payer policy API or internal policy engine
     return {
         "policyId": f"POL-{payer_id}-{procedure_code}",
         "requiresPriorAuth": True,
@@ -48,17 +49,21 @@ def lookup_policy(payer_id: str, procedure_code: str, diagnosis_code: str) -> di
 @tool
 def report_policy(covered: bool, requires_prior_auth: bool, criteria: list[str], policy_id: str) -> dict:
     """Report policy findings back to the coordinator."""
-    return {
+    global _last_tool_result
+    _last_tool_result = {
         "covered": covered,
         "requiresPriorAuth": requires_prior_auth,
         "criteria": criteria,
         "policyId": policy_id,
     }
+    return _last_tool_result
 
 
 def run_agent(payload: dict, callback_id: str, task_id: str):
+    global _last_tool_result
     try:
-        model = BedrockModel(model_id="anthropic.claude-haiku-4-5-20251001-v1:0", max_tokens=2048)
+        _last_tool_result = {}
+        model = BedrockModel(model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0", max_tokens=2048)
         agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=[lookup_policy, report_policy])
 
         prompt = (
@@ -68,7 +73,7 @@ def run_agent(payload: dict, callback_id: str, task_id: str):
         )
 
         result = agent(prompt)
-        answer = result.tool_results[-1] if result.tool_results else str(result)
+        answer = _last_tool_result if _last_tool_result else json.loads(str(result))
 
         lambda_client.send_durable_execution_callback_success(
             CallbackId=callback_id, Result=json.dumps(answer)

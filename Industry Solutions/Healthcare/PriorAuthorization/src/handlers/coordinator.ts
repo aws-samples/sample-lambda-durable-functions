@@ -62,6 +62,8 @@ interface PriorAuthDecision {
 async function invokeAgent(agentArn: string, payload: Record<string, any>): Promise<string> {
   const command = new InvokeAgentRuntimeCommand({
     agentRuntimeArn: agentArn,
+    qualifier: 'DEFAULT',
+    sessionId: `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     payload: new TextEncoder().encode(JSON.stringify(payload)),
   });
   const response = await agentCoreClient.send(command);

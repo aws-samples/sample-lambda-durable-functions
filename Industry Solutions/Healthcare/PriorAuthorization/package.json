@@ -1,0 +1,24 @@
+{
+  "name": "durable-healthcare-prior-auth",
+  "version": "1.0.0",
+  "description": "Healthcare Prior Authorization — Multi-Agent Durable Function Reference Architecture",
+  "scripts": {
+    "build": "sam build",
+    "test": "jest",
+    "lint": "eslint src/",
+    "deploy": "sam deploy --guided"
+  },
+  "dependencies": {
+    "@aws/durable-execution-sdk-js": "^1.1.1",
+    "@aws-sdk/client-bedrock-agentcore": "^3.1038.0"
+  },
+  "devDependencies": {
+    "@aws/durable-execution-sdk-js-testing": "^1.1.1",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.3.0",
+    "typescript": "^5.8.0"
+  }
+}

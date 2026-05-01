@@ -16,7 +16,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 logger = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
-lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 SYSTEM_PROMPT = """You are a clinical document extraction specialist for prior authorization workflows.
 
@@ -31,6 +31,9 @@ Given clinical notes, procedure codes, and diagnosis codes, you must:
 
 Return your analysis as a structured JSON object using the report_findings tool."""
 
+# Store the last tool result for extraction after agent completes
+_last_tool_result = {}
+
 
 @tool
 def report_findings(
@@ -43,7 +46,8 @@ def report_findings(
     requires_medical_necessity: bool,
 ) -> dict:
     """Report extracted clinical facts and routing decisions."""
-    return {
+    global _last_tool_result
+    _last_tool_result = {
         "diagnosis": diagnosis,
         "procedure": procedure,
         "supportingEvidence": supporting_evidence,
@@ -52,11 +56,14 @@ def report_findings(
         "requiresPolicyLookup": requires_policy_lookup,
         "requiresMedicalNecessity": requires_medical_necessity,
     }
+    return _last_tool_result
 
 
 def run_agent(payload: dict, callback_id: str, task_id: str):
+    global _last_tool_result
     try:
-        model = BedrockModel(model_id="anthropic.claude-sonnet-4-6", max_tokens=4096)
+        _last_tool_result = {}
+        model = BedrockModel(model_id="us.anthropic.claude-sonnet-4-6", max_tokens=4096)
         agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=[report_findings])
 
         prompt = (
@@ -68,8 +75,8 @@ def run_agent(payload: dict, callback_id: str, task_id: str):
         )
 
         result = agent(prompt)
-        # Extract the tool result from the agent's response
-        answer = result.tool_results[-1] if result.tool_results else str(result)
+        # Use the captured tool result, or fall back to the text response
+        answer = _last_tool_result if _last_tool_result else json.loads(str(result))
 
         lambda_client.send_durable_execution_callback_success(
             CallbackId=callback_id, Result=json.dumps(answer)

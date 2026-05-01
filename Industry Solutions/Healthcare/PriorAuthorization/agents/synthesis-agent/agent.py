@@ -16,7 +16,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 logger = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
-lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 SYSTEM_PROMPT = """You are a prior authorization synthesis specialist.
 
@@ -31,6 +31,8 @@ along with any failures. Your job is to:
 
 Use synthesize_decision to report your final recommendation."""
 
+_last_tool_result = {}
+
 
 @tool
 def synthesize_decision(
@@ -41,18 +43,22 @@ def synthesize_decision(
     gaps: list[str],
 ) -> dict:
     """Produce the final synthesis decision."""
-    return {
+    global _last_tool_result
+    _last_tool_result = {
         "recommendation": recommendation,
         "confidence": confidence,
         "rationale": rationale,
         "eligible": eligible,
         "gaps": gaps,
     }
+    return _last_tool_result
 
 
 def run_agent(payload: dict, callback_id: str, task_id: str):
+    global _last_tool_result
     try:
-        model = BedrockModel(model_id="anthropic.claude-sonnet-4-6", max_tokens=4096)
+        _last_tool_result = {}
+        model = BedrockModel(model_id="us.anthropic.claude-sonnet-4-6", max_tokens=4096)
         agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=[synthesize_decision])
 
         findings = payload.get("findings", {})
@@ -68,7 +74,7 @@ def run_agent(payload: dict, callback_id: str, task_id: str):
         )
 
         result = agent(prompt)
-        answer = result.tool_results[-1] if result.tool_results else str(result)
+        answer = _last_tool_result if _last_tool_result else json.loads(str(result))
 
         lambda_client.send_durable_execution_callback_success(
             CallbackId=callback_id, Result=json.dumps(answer)

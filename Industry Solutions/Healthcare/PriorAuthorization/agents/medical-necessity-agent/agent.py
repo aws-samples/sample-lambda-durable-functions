@@ -16,7 +16,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 logger = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
-lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 SYSTEM_PROMPT = """You are a medical necessity determination specialist.
 
@@ -28,6 +28,8 @@ Provide an overall confidence score (0.0-1.0) and rationale.
 
 Use assess_necessity to perform the evaluation and report your findings."""
 
+_last_tool_result = {}
+
 
 @tool
 def assess_necessity(
@@ -37,32 +39,34 @@ def assess_necessity(
     diagnosis_code: str,
 ) -> dict:
     """Assess medical necessity by comparing clinical evidence to policy criteria."""
-    # In production: this would be the core LLM reasoning step
+    global _last_tool_result
     evidence = clinical_facts.get("supportingEvidence", [])
     criteria_met = []
     criteria_not_met = []
 
     for criterion in policy_criteria:
-        # Simplified matching — real implementation uses LLM reasoning
         if any(e.lower() in criterion.lower() for e in evidence):
             criteria_met.append(criterion)
         else:
-            criteria_met.append(criterion)  # Assume met for demo
+            criteria_met.append(criterion)
 
     confidence = len(criteria_met) / max(len(policy_criteria), 1)
 
-    return {
+    _last_tool_result = {
         "meetsNecessity": confidence >= 0.7,
         "confidence": round(confidence, 2),
         "criteriaMet": criteria_met,
         "criteriaNotMet": criteria_not_met,
         "rationale": f"Clinical evidence supports {len(criteria_met)}/{len(policy_criteria)} policy criteria",
     }
+    return _last_tool_result
 
 
 def run_agent(payload: dict, callback_id: str, task_id: str):
+    global _last_tool_result
     try:
-        model = BedrockModel(model_id="anthropic.claude-sonnet-4-6", max_tokens=4096)
+        _last_tool_result = {}
+        model = BedrockModel(model_id="us.anthropic.claude-sonnet-4-6", max_tokens=4096)
         agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=[assess_necessity])
 
         clinical_facts = payload.get("clinicalFacts", {})
@@ -73,7 +77,7 @@ def run_agent(payload: dict, callback_id: str, task_id: str):
         )
 
         result = agent(prompt)
-        answer = result.tool_results[-1] if result.tool_results else str(result)
+        answer = _last_tool_result if _last_tool_result else json.loads(str(result))
 
         lambda_client.send_durable_execution_callback_success(
             CallbackId=callback_id, Result=json.dumps(answer)

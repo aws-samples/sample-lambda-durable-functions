@@ -5,6 +5,7 @@ A reference architecture for AI-assisted prior authorization using [AWS Lambda D
 ## How it works
 
 A single durable function orchestrates the entire PA lifecycle. A **Document Agent** acts as the planner — it extracts clinical facts and determines which specialist agents are needed. Only the required specialists are invoked in parallel via AgentCore.
+<img width="952" height="1345" alt="image" src="https://github.com/user-attachments/assets/8db1e69b-496b-4677-9f1a-4e6699417584" />
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐

@@ -36,9 +36,8 @@ def _send_callback(callback_id: str, function_name: str, result: dict) -> None:
     lambda_client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"))
     try:
         lambda_client.send_durable_execution_callback_success(
-            FunctionName=function_name,
             CallbackId=callback_id,
-            Output=json.dumps(result),
+            Result=json.dumps(result),
         )
         print(f"[pipeline] Callback sent: {callback_id}")
     except Exception as e:
@@ -99,7 +98,7 @@ def run_coding_task(
             _send_callback(callback_id, function_name, result)
             return result
 
-        # GitHub mode — apply, commit, push, PR
+        # GitHub mode — apply, commit, push (PR created by orchestrator)
         if not branch_name:
             branch_name = f"agent/{task_id or 'task'}"
         _run_git(["checkout", "-b", branch_name], cwd=work_dir)
@@ -107,10 +106,9 @@ def run_coding_task(
         _run_git(["add", "-A"], cwd=work_dir)
         _run_git(["commit", "-m", f"feat: {task_description[:72]}"], cwd=work_dir)
         _run_git(["push", "origin", branch_name], cwd=work_dir)
-        pr_url = _create_pr(repo_url, branch_name, task_description, github_token)
 
-        print(f"[pipeline] PR created: {pr_url}")
-        result = {"status": "completed", "pr_url": pr_url, "task_id": task_id}
+        print(f"[pipeline] Branch pushed: {branch_name}")
+        result = {"status": "completed", "branch_name": branch_name, "task_id": task_id, "files": [c["path"] for c in changes]}
         _send_callback(callback_id, function_name, result)
         return result
 

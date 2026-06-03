@@ -128,6 +128,14 @@ Resources:
                 Resource:
                   - !Sub '${AgentRuntime.AgentRuntimeArn}/*'
                   - !GetAtt AgentRuntime.AgentRuntimeArn
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${GitHubTokenSecretName}*'
 
   # --- Lambda Durable Function (Orchestrator) ---
   OrchestratorFunction:
@@ -144,6 +152,7 @@ Resources:
         Variables:
           AGENT_RUNTIME_ARN: !GetAtt AgentRuntime.AgentRuntimeArn
           AGENT_REGION: !Ref Region
+          GITHUB_TOKEN_SECRET_ARN: !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${GitHubTokenSecretName}'
       DurableConfig:
         ExecutionTimeout: 86400  # 24 hours
         RetentionPeriodInDays: 7
@@ -162,6 +171,7 @@ Resources:
         GITHUB_TOKEN_SECRET_ARN: !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${GitHubTokenSecretName}'
         AWS_REGION: !Ref Region
         OUTPUT_BUCKET: !Sub 'durable-coding-agent-output-${AWS::AccountId}'
+        DEPLOY_VERSION: '2026-06-02T1620'
       NetworkConfiguration:
         NetworkMode: PUBLIC
 

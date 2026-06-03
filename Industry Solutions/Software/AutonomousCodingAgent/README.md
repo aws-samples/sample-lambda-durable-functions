@@ -1,6 +1,6 @@
 # Durable Coding Agent
 
-A simplified autonomous coding agent built with **AWS Lambda Durable Functions** (orchestrator) and **Amazon Bedrock AgentCore Runtime** (agent). Submit a coding task, and the agent clones a repo, writes code, and opens a pull request on GitHub — all running serverlessly in the cloud.
+An autonomous coding agent built with **AWS Lambda Durable Functions** (orchestrator) and **Amazon Bedrock AgentCore Runtime** (agent). Submit a coding task, and the agent clones a repo, generates code with Bedrock, pushes a branch, and the orchestrator opens a pull request — all running serverlessly with zero idle cost.
 
 ## Architecture
 
@@ -13,13 +13,15 @@ A simplified autonomous coding agent built with **AWS Lambda Durable Functions**
 ┌─────────────────────────────────────────────────────────────────┐
 │              Lambda Durable Function (Orchestrator)               │
 │                                                                   │
-│  1. Validate request                                             │
-│  2. context.step("start-session") → InvokeAgentRuntime           │
-│  3. context.waitForCondition("poll") → poll every 30s            │
-│  4. context.step("finalize") → check GitHub for PR              │
+│  1. context.step("validate") → validate input                    │
+│  2. context.waitForCallback("agent-execution")                   │
+│       → InvokeAgentRuntime, pass callbackId to agent             │
+│       → SUSPEND (zero compute cost until callback received)      │
+│  3. context.step("parse-agent-result") → parse callback payload  │
+│  4. context.step("create-pull-request") → GitHub API             │
+│       → Fetch token from Secrets Manager, create PR              │
 │                                                                   │
-│  Checkpoints at each step. Suspends during waits (no compute).   │
-│  Can run for up to 1 year. Costs only active execution time.     │
+│  Suspends during agent execution. No polling. No compute cost.   │
 └──────────────────────────────┬──────────────────────────────────┘
                                │ InvokeAgentRuntime
                                ▼
@@ -31,28 +33,34 @@ A simplified autonomous coding agent built with **AWS Lambda Durable Functions**
 │    POST /invocations  → accept task, spawn background thread     │
 │                                                                   │
 │  Background pipeline:                                            │
-│    1. Clone repo, create branch                                  │
-│    2. Invoke Bedrock model (Claude) to write code                │
-│    3. Commit changes, push branch                                │
-│    4. Create pull request via GitHub API                          │
-│    5. Write result to DynamoDB                                   │
+│    1. Clone repo (token from Secrets Manager)                    │
+│    2. Invoke Bedrock model (Claude) to generate code             │
+│    3. Apply changes, commit, push branch                         │
+│    4. SendDurableExecutionCallbackSuccess(CallbackId, Result)    │
+│       → Resumes the orchestrator with {branch_name, files}       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## How It Works
 
-1. **Submit a task** — invoke the Lambda with `{ repo, task_description, github_token }`.
-2. **Orchestrator starts** — the durable function validates the input, then calls `InvokeAgentRuntime` to start an AgentCore session.
-3. **Agent runs** — inside an isolated container, the agent clones the repo, uses Claude to generate code changes, commits, pushes, and opens a PR.
-4. **Orchestrator polls** — using `waitForCondition`, the orchestrator checks every 30s if the agent is done. It suspends between polls (zero compute cost).
-5. **Finalization** — once the agent signals completion, the orchestrator reads the result (PR URL or error) and returns it.
+1. **Submit a task** — invoke the Lambda with `{ repo, task_description }`.
+2. **Orchestrator starts** — validates input, calls `InvokeAgentRuntime` passing a `callbackId`, then **suspends** (zero cost).
+3. **Agent runs** — clones the repo, uses Claude on Bedrock to generate code, commits, pushes the branch.
+4. **Agent sends callback** — calls `SendDurableExecutionCallbackSuccess` with the branch name and file list, which **resumes** the orchestrator.
+5. **Orchestrator creates PR** — fetches the GitHub token from Secrets Manager and creates a pull request via the GitHub API.
+
+### Two output modes
+
+- **GitHub mode** (default): Agent pushes a branch, orchestrator opens a PR.
+- **S3 mode**: If `output_bucket` is provided, generated files are written to S3 instead. No GitHub interaction needed.
 
 ## Key Concepts
 
 | Concept | What it does |
 |---------|-------------|
+| `context.waitForCallback()` | Suspends the function (no charges) until an external signal arrives via `SendDurableExecutionCallbackSuccess`. |
 | `context.step()` | Checkpointed unit of work. Replayed on restart without re-executing. |
-| `context.waitForCondition()` | Suspends the function (no charges) until a condition is met. |
+| `SendDurableExecutionCallbackSuccess` | Lambda API called by the agent to resume the orchestrator with a result payload. |
 | `DurableConfig` | SAM property enabling durable execution on a Lambda function. |
 | AgentCore Runtime | Managed container hosting with `/ping` + `/invocations` contract. |
 | `HealthyBusy` | Tells AgentCore "I'm working, don't idle-terminate me." |
@@ -60,65 +68,89 @@ A simplified autonomous coding agent built with **AWS Lambda Durable Functions**
 ## Project Structure
 
 ```
-durable-coding-agent/
-├── orchestrator/          # Lambda Durable Function (TypeScript)
-│   ├── src/index.ts       # Orchestrator handler
-│   └── package.json
-├── agent/                 # AgentCore Runtime (Python)
+AutonomousCodingAgent/
+├── orchestrator/              # Lambda Durable Function (TypeScript)
+│   ├── src/index.ts           # Orchestrator: validate → waitForCallback → create PR
+│   ├── src/secrets-manager.d.ts
+│   ├── package.json
+│   └── tsconfig.json
+├── agent/                     # AgentCore Runtime (Python)
 │   ├── src/
-│   │   ├── server.py      # FastAPI /ping + /invocations
-│   │   └── pipeline.py    # Clone → code → commit → PR
+│   │   ├── server.py          # FastAPI /ping + /invocations
+│   │   └── pipeline.py        # Clone → generate → commit → push → callback
 │   ├── Dockerfile
 │   └── requirements.txt
-└── infra/
-    └── template.yaml      # SAM template (Lambda + AgentCore + IAM)
+├── infra/
+│   └── template.yaml          # SAM template (Lambda + AgentCore + IAM + API GW)
+├── deploy.sh                  # One-command deployment script
+├── test_local.py              # Local testing helper
+└── demo.html                  # Simple browser UI
 ```
 
 ## Deployment
 
 ### Prerequisites
 
-- AWS CLI configured with appropriate permissions
+- AWS CLI configured
 - SAM CLI installed
-- Docker (for building the agent container)
-- A GitHub Personal Access Token with `repo` scope
+- Finch or Docker (for building the agent container)
+- A GitHub Fine-Grained Personal Access Token with **Contents** (read/write) and **Pull requests** (read/write) permissions
 
-### Steps
+### One-Command Deploy
 
 ```bash
-# 1. Build and push the agent container
-cd agent
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com
-docker build -t coding-agent .
-docker tag coding-agent:latest <ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/coding-agent:latest
-docker push <ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/coding-agent:latest
+./deploy.sh
+```
 
-# 2. Build the orchestrator
-cd ../orchestrator
-npm install && npm run build
+This will:
+1. Create the ECR repository
+2. Build and push the agent container (arm64)
+3. Build the orchestrator
+4. Create the GitHub token secret in Secrets Manager
+5. Deploy the SAM stack
 
-# 3. Deploy the stack
-cd ../infra
-sam build && sam deploy --guided
+### Store your GitHub token
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id durable-coding-agent/github-token \
+  --secret-string 'github_pat_YOUR_TOKEN' \
+  --region us-east-1
 ```
 
 ### Invoke
 
 ```bash
+# GitHub mode — generates code and opens a PR
 aws lambda invoke \
   --function-name durable-coding-agent \
+  --qualifier '$LATEST' \
   --cli-binary-format raw-in-base64-out \
+  --invocation-type Event \
   --payload '{
     "repo": "owner/repo-name",
-    "task_description": "Add a health check endpoint to the Express app",
-    "github_token": "ghp_..."
+    "task_description": "Add a health check endpoint"
   }' \
-  response.json
+  /dev/null
+
+# S3 mode — writes generated files to S3 for inspection
+aws lambda invoke \
+  --function-name durable-coding-agent \
+  --qualifier '$LATEST' \
+  --cli-binary-format raw-in-base64-out \
+  --invocation-type Event \
+  --payload '{
+    "repo": "owner/repo-name",
+    "task_description": "Add a health check endpoint",
+    "output_bucket": "my-output-bucket"
+  }' \
+  /dev/null
 ```
+
+> **Note**: Durable functions require the `--qualifier '$LATEST'` flag.
 
 ## References
 
-- [AWS Durable Functions Docs](https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html)
+- [AWS Lambda Durable Functions](https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html)
 - [Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime.html)
 - [sample-lambda-durable-functions](https://github.com/aws-samples/sample-lambda-durable-functions)
-- [sample-autonomous-cloud-coding-agents](https://github.com/aws-samples/sample-autonomous-cloud-coding-agents)

@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Durable Coding Agent — Lambda Durable Function + AgentCore Runtime
+
+Parameters:
+  AgentRuntimeName:
+    Type: String
+    Default: coding_agent
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9_]{0,47}'
+  ECRRepoName:
+    Type: String
+    Default: coding-agent
+  Region:
+    Type: String
+    Default: us-east-1
+
+  GitHubTokenSecretName:
+    Type: String
+    Default: durable-coding-agent/github-token
+
+Resources:
+  # --- IAM: AgentCore Runtime Role ---
+  AgentCoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AgentRuntimeName}-agentcore-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies:
+        - PolicyName: BedrockInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:Converse
+                Resource:
+                  - 'arn:aws:bedrock:*::foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:${Region}:${AWS::AccountId}:inference-profile/*'
+                  - 'arn:aws:bedrock:*:*:inference-profile/*'
+        - PolicyName: ECRAuth
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+        - PolicyName: Logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:aws:logs:${Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/*'
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${GitHubTokenSecretName}*'
+        - PolicyName: S3Output
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::durable-coding-agent-output-${AWS::AccountId}/*'
+        - PolicyName: DurableCallback
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:SendDurableExecutionCallbackSuccess
+                  - lambda:SendDurableExecutionCallbackFailure
+                Resource: !Sub 'arn:aws:lambda:${Region}:${AWS::AccountId}:function:durable-coding-agent:*'
+
+  # --- IAM: Lambda Execution Role ---
+  OrchestratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AgentRuntimeName}-orchestrator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DurableExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:CheckpointDurableExecution
+                  - lambda:GetDurableExecutionState
+                Resource: !Sub 'arn:aws:lambda:${Region}:${AWS::AccountId}:function:durable-coding-agent:*'
+        - PolicyName: InvokeAgentCore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: bedrock-agentcore:InvokeAgentRuntime
+                Resource:
+                  - !Sub '${AgentRuntime.AgentRuntimeArn}/*'
+                  - !GetAtt AgentRuntime.AgentRuntimeArn
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${GitHubTokenSecretName}*'
+
+  # --- Lambda Durable Function (Orchestrator) ---
+  OrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: durable-coding-agent
+      CodeUri: ../orchestrator/dist/
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Timeout: 120
+      MemorySize: 128
+      Role: !GetAtt OrchestratorRole.Arn
+      Environment:
+        Variables:
+          AGENT_RUNTIME_ARN: !GetAtt AgentRuntime.AgentRuntimeArn
+          AGENT_REGION: !Ref Region
+          GITHUB_TOKEN_SECRET_ARN: !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${GitHubTokenSecretName}'
+      DurableConfig:
+        ExecutionTimeout: 86400  # 24 hours
+        RetentionPeriodInDays: 7
+
+  # --- AgentCore Runtime ---
+  AgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: !Ref AgentRuntimeName
+      Description: Coding agent that clones repos, writes code, and opens PRs (v4)
+      RoleArn: !GetAtt AgentCoreRole.Arn
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Sub '${AWS::AccountId}.dkr.ecr.${Region}.amazonaws.com/${ECRRepoName}:latest'
+      EnvironmentVariables:
+        GITHUB_TOKEN_SECRET_ARN: !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${GitHubTokenSecretName}'
+        AWS_REGION: !Ref Region
+        OUTPUT_BUCKET: !Sub 'durable-coding-agent-output-${AWS::AccountId}'
+        DEPLOY_VERSION: '2026-06-02T1620'
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+
+  # --- API Gateway HTTP API (demo UI) ---
+  DemoApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['POST', 'GET', 'OPTIONS']
+        AllowHeaders: ['Content-Type']
+
+  # --- API Handler: Submit Task ---
+  SubmitTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: durable-coding-agent-submit
+      InlineCode: |
+        const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+        const client = new LambdaClient({});
+        exports.handler = async (event) => {
+          const body = JSON.parse(event.body || '{}');
+          const taskId = `demo-${Date.now()}`;
+          const payload = JSON.stringify({
+            repo: body.repo || 'example/app',
+            task_description: body.task_description,
+            output_bucket: process.env.OUTPUT_BUCKET,
+          });
+          await client.send(new InvokeCommand({
+            FunctionName: process.env.DURABLE_FUNCTION_NAME,
+            InvocationType: 'Event',
+            Qualifier: '$LATEST',
+            Payload: payload,
+          }));
+          return { statusCode: 202, body: JSON.stringify({ task_id: taskId, status: 'submitted' }) };
+        };
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          DURABLE_FUNCTION_NAME: !Ref OrchestratorFunction
+          OUTPUT_BUCKET: !Sub 'durable-coding-agent-output-${AWS::AccountId}'
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref OrchestratorFunction
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DemoApi
+            Path: /tasks
+            Method: POST
+
+  # --- API Handler: Get Results ---
+  GetResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: durable-coding-agent-results
+      InlineCode: |
+        const { S3Client, ListObjectsV2Command, GetObjectCommand } = require('@aws-sdk/client-s3');
+        const s3 = new S3Client({});
+        exports.handler = async (event) => {
+          const bucket = process.env.OUTPUT_BUCKET;
+          const taskId = event.queryStringParameters?.task_id;
+          if (taskId) {
+            const prefix = `coding-agent/${taskId}/`;
+            const list = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }));
+            const files = [];
+            for (const obj of (list.Contents || [])) {
+              const data = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: obj.Key }));
+              const content = await data.Body.transformToString();
+              files.push({ path: obj.Key.replace(prefix, ''), content });
+            }
+            return { statusCode: 200, body: JSON.stringify({ files }) };
+          }
+          // List recent tasks
+          const list = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'coding-agent/', Delimiter: '/' }));
+          const tasks = (list.CommonPrefixes || []).map(p => p.Prefix.split('/')[1]).sort().reverse().slice(0, 10);
+          return { statusCode: 200, body: JSON.stringify({ tasks }) };
+        };
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          OUTPUT_BUCKET: !Sub 'durable-coding-agent-output-${AWS::AccountId}'
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub 'durable-coding-agent-output-${AWS::AccountId}'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DemoApi
+            Path: /results
+            Method: GET
+
+Outputs:
+  DemoApiUrl:
+    Value: !Sub 'https://${DemoApi}.execute-api.${Region}.amazonaws.com/prod'
+    Description: Demo API URL for the UI
+  OrchestratorArn:
+    Value: !GetAtt OrchestratorFunction.Arn
+  AgentRuntimeArn:
+    Value: !GetAtt AgentRuntime.AgentRuntimeArn
+  AgentRuntimeId:
+    Value: !GetAtt AgentRuntime.AgentRuntimeId
+  GitHubTokenSecretName:
+    Value: !Ref GitHubTokenSecretName
+    Description: Store your GitHub PAT in this secret

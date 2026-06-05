@@ -1,0 +1,462 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Stripe Card Payment with Lambda Durable Functions.
+  Enhanced with X-Ray tracing, Powertools observability,
+  CloudWatch alarms, and custom EMF metrics.
+
+Parameters:
+  StripeSecretKey:
+    Type: String
+    Description: Stripe test secret key (sk_test_...)
+    NoEcho: true
+  StripePublishableKey:
+    Type: String
+    Description: Stripe test publishable key (pk_test_...)
+  StripeWebhookSecret:
+    Type: String
+    Description: Stripe webhook signing secret (whsec_...)
+    NoEcho: true
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        POWERTOOLS_METRICS_NAMESPACE: DurablePayments
+        LOG_LEVEL: INFO
+
+Resources:
+
+  # ── Encryption key for logs and alarm notifications ──
+  # Customer managed KMS key (rotation enabled) used to encrypt the API access
+  # log group and the alarm SNS topic. A customer managed key is required (not
+  # an AWS managed key) so the CloudWatch Logs and CloudWatch alarms service
+  # principals can be granted use of the key.
+  ObservabilityKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "Encrypts access logs and alarm notifications for ${AWS::StackName}"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              ArnLike:
+                "kms:EncryptionContext:aws:logs:arn": !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/${AWS::StackName}-access-logs"
+          - Sid: AllowCloudWatchAlarmsToPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+            Resource: "*"
+
+  # ── API Gateway ──────────────────────────────────────
+  PaymentApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-access-logs"
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt ObservabilityKey.Arn
+
+  PaymentApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: dev
+      Description: Payment processing API
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt PaymentApiLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp",
+          "requestTime":"$context.requestTime","httpMethod":"$context.httpMethod",
+          "routeKey":"$context.routeKey","status":"$context.status",
+          "protocol":"$context.protocol","responseLength":"$context.responseLength"}
+
+  # ── 1. Thin API Lambda ──────────────────────────────
+  PaymentApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-payment-api"
+      Handler: api_handler.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          PROCESSOR_FUNCTION_ARN: !Sub "${PaymentProcessorFunction.Arn}:live"
+          STRIPE_SECRET_KEY: !Ref StripeSecretKey
+          STRIPE_PUBLISHABLE_KEY: !Ref StripePublishableKey
+          POWERTOOLS_SERVICE_NAME: payment-api
+      Events:
+        StartPayment:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PaymentApi
+            Path: /pay
+            Method: POST
+        GetStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PaymentApi
+            Path: /pay/{proxy+}
+            Method: GET
+        Checkout:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PaymentApi
+            Path: /checkout
+            Method: GET
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PaymentProcessorFunction
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:GetDurableExecution
+                - lambda:StopDurableExecution
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt PaymentProcessorFunction.Arn
+                - !Sub "${PaymentProcessorFunction.Arn}:*"
+
+  # ── 2. Durable Payment Processor ────────────────────
+  PaymentProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-payment-processor"
+      Handler: payment_processor.handler
+      CodeUri: .
+      Timeout: 60
+      AutoPublishAlias: live
+      DurableConfig:
+        # ExecutionTimeout must exceed the longest callback timeout so the
+        # callback itself times out (handled gracefully) rather than the whole
+        # execution timing out first. The payment callback waits up to 5 minutes
+        # (300s), so 600s gives headroom. The simulate-timeout test path uses a
+        # 1-hour callback that intentionally exceeds this to force TIMED_OUT.
+        ExecutionTimeout: 600
+        RetentionPeriodInDays: 5
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY: !Ref StripeSecretKey
+          POWERTOOLS_SERVICE_NAME: payment-processor
+      Policies:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicDurableExecutionRolePolicy
+
+  # ── 3. Stripe Webhook Handler ───────────────────────
+  StripeWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-webhook-handler"
+      Handler: webhook_handler.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          STRIPE_SECRET_KEY: !Ref StripeSecretKey
+          STRIPE_WEBHOOK_SECRET: !Ref StripeWebhookSecret
+          POWERTOOLS_SERVICE_NAME: stripe-webhook
+      Events:
+        StripeWebhook:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PaymentApi
+            Path: /stripe/webhook
+            Method: POST
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            # Scoped to the payment processor function (all versions/executions)
+            # — the only durable function whose callbacks this handler resumes.
+            - Effect: Allow
+              Action: lambda:SendDurableExecutionCallbackSuccess
+              Resource: !Sub "${PaymentProcessorFunction.Arn}:*"
+
+  # ── CloudWatch Alarms ───────────────────────────────
+
+  # SNS topic for alarm notifications. Subscribe an email/ops endpoint after
+  # deploy: aws sns subscribe --topic-arn <AlarmTopicArn> --protocol email
+  #         --notification-endpoint you@example.com
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-alarms"
+      DisplayName: Payment processing alarms
+      KmsMasterKeyId: !Ref ObservabilityKey
+
+  DurableExecutionFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-DurableExecutionFailures"
+      AlarmDescription: Fires when durable executions fail
+      Namespace: AWS/Lambda
+      MetricName: DurableExecutionFailed
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref PaymentProcessorFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  DurableExecutionTimedOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-DurableExecutionTimedOut"
+      AlarmDescription: Fires when durable executions exceed ExecutionTimeout
+      Namespace: AWS/Lambda
+      MetricName: DurableExecutionTimedOut
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref PaymentProcessorFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  PaymentTimeoutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-PaymentTimeouts"
+      AlarmDescription: Fires when payments time out waiting for webhook
+      Namespace: DurablePayments
+      MetricName: PaymentTimeout
+      Dimensions:
+        - Name: service
+          Value: payment-processor
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  WebhookSignatureFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-WebhookSignatureFailures"
+      AlarmDescription: Fires when webhook signature verification fails
+      Namespace: DurablePayments
+      MetricName: WebhookSignatureFailure
+      Dimensions:
+        - Name: service
+          Value: stripe-webhook
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  WebhookErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-WebhookErrors"
+      AlarmDescription: Fires when webhook Lambda errors spike
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref StripeWebhookFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  # ── CloudWatch Dashboard ────────────────────────────
+  PaymentDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${AWS::StackName}-PaymentProcessor"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "DurableExecutionStarted"],
+                  [".", "DurableExecutionSucceeded"],
+                  [".", "DurableExecutionFailed"],
+                  [".", "DurableExecutionTimedOut"],
+                  [".", "DurableExecutionStopped"]
+                ],
+                "period": 300, "stat": "Sum", "region": "${AWS::Region}",
+                "title": "Durable Execution State",
+                "dimensions": { "FunctionName": ["${PaymentProcessorFunction}"] }
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["DurablePayments", "PaymentSucceeded", "service", "payment-processor"],
+                  [".", "PaymentFailed", "service", "payment-processor"],
+                  [".", "PaymentTimeout", "service", "payment-processor"]
+                ],
+                "period": 300, "stat": "Sum", "region": "${AWS::Region}",
+                "title": "Payment Outcomes (EMF Custom Metrics)"
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["DurablePayments", "PaymentRequested", "service", "payment-api"],
+                  [".", "PaymentIntentCreated", "service", "payment-processor"],
+                  [".", "WebhookReceived", "service", "stripe-webhook"],
+                  [".", "WebhookSucceeded", "service", "stripe-webhook"]
+                ],
+                "period": 300, "stat": "Sum", "region": "${AWS::Region}",
+                "title": "End-to-End Flow Metrics"
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "ApproximateRunningDurableExecutions"],
+                  [".", "ApproximateRunningDurableExecutionsUtilization", {"yAxis": "right"}]
+                ],
+                "period": 300, "stat": "Average", "region": "${AWS::Region}",
+                "title": "Running Executions & Quota Utilization",
+                "dimensions": { "FunctionName": ["${PaymentProcessorFunction}"] },
+                "yAxis": { "right": { "min": 0, "max": 100, "label": "%" } }
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "DurableExecutionDuration"]
+                ],
+                "period": 300, "stat": "Average", "region": "${AWS::Region}",
+                "title": "Durable Execution Duration (ms)",
+                "dimensions": { "FunctionName": ["${PaymentProcessorFunction}"] }
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "DurableExecutionOperations"],
+                  [".", "DurableExecutionStorageWrittenBytes", {"yAxis": "right"}]
+                ],
+                "period": 300, "stat": "Average", "region": "${AWS::Region}",
+                "title": "Resource Usage (Cost Drivers)",
+                "dimensions": { "FunctionName": ["${PaymentProcessorFunction}"] },
+                "yAxis": { "left": { "label": "Operations" }, "right": { "label": "Storage (bytes)" } }
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["DurablePayments", "WebhookSignatureFailure", "service", "stripe-webhook"],
+                  [".", "WebhookPaymentFailed", "service", "stripe-webhook"],
+                  [".", "ValidationFailure", "service", "payment-processor"],
+                  [".", "InvokeFailure", "service", "payment-api"]
+                ],
+                "period": 300, "stat": "Sum", "region": "${AWS::Region}",
+                "title": "Error Breakdown (Debugging)"
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${PaymentApiFunction}"],
+                  [".", "Errors", "FunctionName", "${PaymentApiFunction}"],
+                  [".", "Invocations", "FunctionName", "${StripeWebhookFunction}"],
+                  [".", "Errors", "FunctionName", "${StripeWebhookFunction}"]
+                ],
+                "period": 300, "stat": "Sum", "region": "${AWS::Region}",
+                "title": "API & Webhook Invocations / Errors"
+              }
+            },
+            {
+              "type": "metric", "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${PaymentApiFunction}"],
+                  [".", "Duration", "FunctionName", "${StripeWebhookFunction}"]
+                ],
+                "period": 300, "stat": "Average", "region": "${AWS::Region}",
+                "title": "API & Webhook Latency (ms)"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${PaymentApi}.execute-api.${AWS::Region}.amazonaws.com/dev"
+  PaymentProcessorFunction:
+    Description: Durable payment processor function
+    Value: !Ref PaymentProcessorFunction
+  PaymentProcessorAlias:
+    Description: Qualified alias ARN for the durable function
+    Value: !Sub "${PaymentProcessorFunction.Arn}:live"
+  StripeWebhookUrl:
+    Description: Register this URL in Stripe Dashboard > Developers > Webhooks
+    Value: !Sub "https://${PaymentApi}.execute-api.${AWS::Region}.amazonaws.com/dev/stripe/webhook"
+  DashboardUrl:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub "https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${PaymentDashboard}"
+  CheckoutUrl:
+    Description: Open this in a browser to test payments
+    Value: !Sub "https://${PaymentApi}.execute-api.${AWS::Region}.amazonaws.com/dev/checkout"
+  XRayServiceMap:
+    Description: X-Ray Service Map to trace requests across all 3 Lambdas
+    Value: !Sub "https://console.aws.amazon.com/xray/home?region=${AWS::Region}#/service-map"
+  AlarmTopicArn:
+    Description: Subscribe an email/ops endpoint here to receive alarm notifications
+    Value: !Ref AlarmTopic

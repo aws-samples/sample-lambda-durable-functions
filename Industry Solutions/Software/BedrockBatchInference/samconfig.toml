@@ -1,0 +1,5 @@
+[default.deploy.parameters]
+stack_name = "bedrock-batch-durable"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true

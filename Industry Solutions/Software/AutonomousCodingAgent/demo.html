@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Coding Agent — Demo</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Fira+Code:wght@400&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Open Sans', -apple-system, sans-serif; background: #f2f3f3; color: #000716; min-height: 100vh; display: flex; flex-direction: column; }
+    .topnav { background: #0f1b2a; padding: 0 1.5rem; height: 40px; display: flex; align-items: center; gap: 1rem; }
+    .topnav h1 { color: #fff; font-size: 0.85rem; font-weight: 700; }
+    .topnav .badge { background: #0972d3; color: #fff; font-size: 0.65rem; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: 600; }
+    .page { flex: 1; display: flex; flex-direction: column; padding: 1.5rem; gap: 1rem; overflow: hidden; }
+    .cs-container { background: #fff; border: 1px solid #e9ebed; border-radius: 12px; overflow: hidden; }
+    .cs-header { padding: 1rem 1.5rem; border-bottom: 1px solid #e9ebed; }
+    .cs-header h2 { font-size: 1.1rem; font-weight: 700; }
+    .cs-header p { font-size: 0.8rem; color: #5f6b7a; margin-top: 0.2rem; }
+    .cs-body { padding: 1.5rem; }
+    .form-row { display: flex; gap: 1rem; align-items: flex-end; margin-bottom: 1rem; }
+    .form-field { flex: 1; }
+    .form-field label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem; }
+    .form-field textarea { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #7d8998; border-radius: 8px; font-size: 0.85rem; font-family: inherit; color: #000716; height: 60px; resize: vertical; }
+    .form-field textarea:focus { outline: none; border-color: #0972d3; box-shadow: 0 0 0 2px rgba(9,114,211,0.2); }
+    .btn-primary { background: #0972d3; color: #fff; border: none; padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; height: 36px; white-space: nowrap; }
+    .btn-primary:hover { background: #065299; }
+    .btn-primary:disabled { background: #e9ebed; color: #5f6b7a; cursor: not-allowed; }
+    .toggle { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; white-space: nowrap; }
+    .toggle input { display: none; }
+    .toggle-slider { width: 36px; height: 20px; background: #e9ebed; border-radius: 10px; position: relative; transition: background 0.2s; }
+    .toggle-slider::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: transform 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+    .toggle input:checked + .toggle-slider { background: #0972d3; }
+    .toggle input:checked + .toggle-slider::after { transform: translateX(16px); }
+    .toggle-label { font-size: 0.75rem; font-weight: 600; color: #5f6b7a; }
+    .samples { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+    .samples button { background: #f2f8fd; color: #0972d3; border: 1px solid #b6d4f0; padding: 0.3rem 0.7rem; border-radius: 16px; font-size: 0.75rem; cursor: pointer; font-weight: 600; }
+    .samples button:hover { background: #d1e8fc; }
+    .samples button.active { background: #0972d3; color: #fff; border-color: #0972d3; }
+    .samples-label { font-size: 0.8rem; color: #5f6b7a; font-weight: 600; }
+    .talk-track { font-size: 0.85rem; color: #414d5c; background: #f2f8fd; border-left: 3px solid #0972d3; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; display: none; font-style: italic; }
+    /* Flow diagram */
+    .flow { display: none; margin-bottom: 1rem; padding: 1rem; background: #fafafa; border: 1px solid #e9ebed; border-radius: 8px; overflow-x: auto; }
+    .flow-row { display: flex; align-items: center; gap: 0; min-width: max-content; }
+    .flow-node { border: 1.5px solid #7d8998; border-radius: 10px; padding: 0.6rem 1rem; min-width: 160px; text-align: center; background: #fff; }
+    .flow-node .flow-icon { font-size: 1.2rem; margin-bottom: 0.2rem; }
+    .flow-node .flow-title { font-size: 0.75rem; font-weight: 700; color: #000716; }
+    .flow-node .flow-sub { font-size: 0.7rem; color: #5f6b7a; margin-top: 0.1rem; }
+    .flow-arrow { display: flex; align-items: center; padding: 0 0.3rem; color: #0972d3; flex-shrink: 0; }
+    .flow-arrow .arrow-line { width: 40px; height: 2px; background: #0972d3; }
+    .flow-arrow .arrow-label { font-size: 0.65rem; color: #5f6b7a; text-align: center; position: absolute; margin-top: -1.2rem; white-space: nowrap; }
+    .flow-arrow-wrap { display: flex; flex-direction: column; align-items: center; padding: 0 0.2rem; }
+    .flow-arrow-wrap .arrow-label { font-size: 0.65rem; color: #5f6b7a; margin-bottom: 0.2rem; font-weight: 600; }
+    .flow-arrow-wrap .arrow-body { display: flex; align-items: center; }
+    .flow-arrow-wrap .arrow-line { width: 40px; height: 2px; background: #0972d3; }
+    .flow-arrow-wrap .arrow-head { width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 8px solid #0972d3; }
+    /* Status */
+    .status-pill { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.8rem; border-radius: 16px; font-size: 0.75rem; font-weight: 600; }
+    .status-pill.running { background: #fef3cd; color: #856404; }
+    .status-pill.done { background: #d4edda; color: #155724; }
+    .status-pill.error { background: #f8d7da; color: #721c24; }
+    .status-pill.idle { display: none; }
+    /* Explorer */
+    .explorer { flex: 1; display: flex; border-top: 1px solid #e9ebed; overflow: hidden; }
+    .sidebar { width: 250px; border-right: 1px solid #e9ebed; overflow-y: auto; padding: 0.5rem 0; background: #fafafa; }
+    .editor { flex: 1; overflow: auto; background: #fff; }
+    .editor-header { padding: 0.5rem 1rem; background: #fafafa; border-bottom: 1px solid #e9ebed; font-size: 0.8rem; color: #5f6b7a; font-family: 'Fira Code', monospace; }
+    .editor pre { margin: 0; padding: 1rem; font-size: 0.8rem; }
+    .editor code { font-family: 'Fira Code', monospace; }
+    .tree-item { padding: 0.3rem 0.75rem; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; border-radius: 4px; margin: 1px 4px; }
+    .tree-item:hover { background: #f2f8fd; }
+    .tree-item.active { background: #d1e8fc; color: #0972d3; font-weight: 600; }
+    .tree-item.folder { color: #5f6b7a; font-weight: 600; }
+    .tree-folder-contents { padding-left: 1rem; }
+    .empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #5f6b7a; font-size: 0.85rem; padding: 2rem; }
+    .config-row { display: none; }
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,7,22,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .modal { background: #fff; border-radius: 12px; width: 480px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+    .modal-header { padding: 1rem 1.5rem; font-size: 1rem; font-weight: 700; border-bottom: 1px solid #e9ebed; }
+    .modal-body { padding: 1.5rem; }
+    .modal-body p { font-size: 0.85rem; color: #414d5c; line-height: 1.5; }
+    .modal-footer { padding: 1rem 1.5rem; border-top: 1px solid #e9ebed; display: flex; justify-content: flex-end; gap: 0.75rem; }
+    .btn-secondary { background: #fff; color: #0972d3; border: 1px solid #0972d3; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+    .btn-secondary:hover { background: #f2f8fd; }
+  </style>
+</head>
+<body>
+  <div class="topnav">
+    <h1>Autonomous Coding Agent</h1>
+    <span class="badge">Durable Functions + AgentCore</span>
+  </div>
+  <div class="page">
+    <div class="cs-container" style="flex-shrink:0">
+      <div class="cs-header">
+        <h2>Background sandbox coding agents</h2>
+        <p>Humans submit tasks or systems trigger them automatically — CI pipelines, error trackers, Slack bots, cron jobs. The agent works autonomously in an isolated cloud environment and delivers a PR. No IDE, no babysitting.</p>
+      </div>
+      <div class="cs-body">
+        <div class="samples">
+          <span class="samples-label">👆 Choose a scenario:</span>
+          <button onclick="selectSample(0)">🌙 Backlog overnight</button>
+          <button onclick="selectSample(1)">📊 Coverage bot</button>
+          <button onclick="selectSample(2)">🔄 Dep upgrade CI</button>
+          <button onclick="selectSample(3)">💬 Slack request</button>
+          <button onclick="selectSample(4)">🐛 Error tracker</button>
+          <button onclick="selectSample(5)">📡 Fan-out patch</button>
+        </div>
+        <div class="talk-track" id="talkTrack"></div>
+        <div class="flow" id="flowDiagram"></div>
+        <div class="form-row">
+          <div class="form-field" style="flex:3">
+            <label>Task description</label>
+            <textarea id="task"></textarea>
+          </div>
+          <label class="toggle"><input type="checkbox" id="simToggle" checked><span class="toggle-slider"></span><span class="toggle-label">Simulation</span></label>
+          <button id="submitBtn" class="btn-primary" onclick="submitTask()">Generate code</button>
+        </div>
+        <span id="statusPill" class="status-pill idle">Ready</span>
+      </div>
+    </div>
+    <div class="cs-container" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <div class="cs-header"><h2>Generated files</h2></div>
+      <div class="explorer">
+        <div class="sidebar" id="sidebar"><div class="empty">No files yet</div></div>
+        <div class="editor" id="editor"><div class="empty">Select a file to view its contents</div></div>
+      </div>
+    </div>
+  </div>
+
+  <input type="hidden" id="apiUrl" value="">
+  <!-- Modal -->
+  <div class="modal-overlay" id="modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">Connect to backend</div>
+      <div class="modal-body">
+        <p>Enter your API Gateway endpoint from the SAM deploy output, or enable <strong>Simulation mode</strong> to preview the experience without a backend.</p>
+        <label class="form-field" style="margin-top:1rem">
+          <span style="font-size:0.8rem;font-weight:600">API endpoint</span>
+          <input id="apiUrlInput" placeholder="https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/prod" style="margin-top:0.3rem">
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="enableSim()">Use Simulation instead</button>
+        <button class="btn-primary" onclick="connectApi()">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let startTime = null, pollTimer = null;
+
+    const samples = [
+      { prompt: 'Add type hints to all functions in the utils/ directory. Use standard library types where possible, Optional for nullable params, and add a py.typed marker file.',
+        talk: 'A cron job scans for issues tagged tech-debt, submits each one to the agent, and you wake up to a stack of PRs to review instead of a stack of tickets to write.',
+        nodes: [{icon:'🌙',title:'Cron Job',sub:'scans tech-debt issues'},{icon:'🤖',title:'Coding Agent',sub:'Durable Function + AgentCore'},{icon:'📦',title:'utils/ module',sub:'adds type hints'},{icon:'📋',title:'Pull Request',sub:'ready to review at 8am'}],
+        arrows: ['submits task','generates code','opens'] },
+      { prompt: 'Write unit tests for the PaymentService class covering: successful charge, insufficient funds, expired card, refund, and idempotency key deduplication. Mock the Stripe client.',
+        talk: 'CI detects coverage dropped below threshold and fires a task. The agent produces tests, you review. Safe blast radius — test files only.',
+        nodes: [{icon:'📊',title:'CI Pipeline',sub:'coverage below 80%'},{icon:'🤖',title:'Coding Agent',sub:'Durable Function + AgentCore'},{icon:'🧪',title:'PaymentService tests',sub:'5 cases + mocks'},{icon:'📋',title:'Pull Request',sub:'+12% coverage'}],
+        arrows: ['triggers task','generates tests','opens'] },
+      { prompt: 'Migrate all uses of the deprecated request library to httpx. Preserve existing error handling, timeouts, and retry logic. Update requirements.txt.',
+        talk: 'Dependabot flags a deprecated library. Instead of a human spending an afternoon on mechanical find-and-replace, the agent migrates and opens a PR.',
+        nodes: [{icon:'🔄',title:'Dependabot',sub:'deprecated library alert'},{icon:'🤖',title:'Coding Agent',sub:'Durable Function + AgentCore'},{icon:'📦',title:'HTTP client layer',sub:'requests → httpx'},{icon:'📋',title:'Pull Request',sub:'zero behavior change'}],
+        arrows: ['triggers task','refactors','opens'] },
+      { prompt: 'Add a new /orders endpoint following the exact same pattern as /users — CRUD handlers, input validation, error middleware, and integration tests.',
+        talk: 'An engineer types in Slack: "need an /orders endpoint like /users." The webhook fires, the agent sees the pattern, replicates it, and opens a PR.',
+        nodes: [{icon:'💬',title:'Slack message',sub:'engineer requests feature'},{icon:'🤖',title:'Coding Agent',sub:'Durable Function + AgentCore'},{icon:'🏗️',title:'/orders endpoint',sub:'follows /users pattern'},{icon:'📋',title:'Pull Request',sub:'CRUD + tests'}],
+        arrows: ['webhook fires','scaffolds','opens'] },
+      { prompt: 'The webhook handler in src/events/processor.ts is dropping events when the queue is full. Add a dead-letter queue with exponential backoff retry and alerting on repeated failures.',
+        talk: 'Sentry detects a spike in dropped events. The alert triggers a task. The agent reads the code, identifies the fix, and opens a PR. Worst case, you close it.',
+        nodes: [{icon:'🐛',title:'Sentry alert',sub:'events being dropped'},{icon:'🤖',title:'Coding Agent',sub:'Durable Function + AgentCore'},{icon:'🔧',title:'Event processor',sub:'adds DLQ + retry'},{icon:'📋',title:'Pull Request',sub:'review or close'}],
+        arrows: ['spawns fix','writes code','opens'] },
+      { prompt: 'Update the CI workflow, Dockerfile, and README across all services to use Node 22 instead of Node 18. Pin the exact version in .nvmrc and engine field in package.json.',
+        talk: 'The platform team decides all services move to Node 22. One dispatch fans out to every repo. Fifteen PRs land in parallel instead of one engineer doing them sequentially.',
+        nodes: [{icon:'📡',title:'Platform team',sub:'dispatches to all repos'},{icon:'🤖',title:'Coding Agent ×15',sub:'parallel execution'},{icon:'📦',title:'All services',sub:'Node 18 → Node 22'},{icon:'📋',title:'15 Pull Requests',sub:'merge in parallel'}],
+        arrows: ['fans out','patches each','opens'] },
+    ];
+
+    function renderFlow(nodes, arrows) {
+      let html = '<div class="flow-row">';
+      nodes.forEach((n, i) => {
+        html += `<div class="flow-node"><div class="flow-icon">${n.icon}</div><div class="flow-title">${n.title}</div><div class="flow-sub">${n.sub}</div></div>`;
+        if (i < nodes.length - 1) {
+          html += `<div class="flow-arrow-wrap"><div class="arrow-label">${arrows[i]}</div><div class="arrow-body"><div class="arrow-line"></div><div class="arrow-head"></div></div></div>`;
+        }
+      });
+      html += '</div>';
+      return html;
+    }
+
+    function selectSample(idx) {
+      const s = samples[idx];
+      document.getElementById('task').value = s.prompt;
+      document.getElementById('talkTrack').style.display = 'block';
+      document.getElementById('talkTrack').textContent = s.talk;
+      const flow = document.getElementById('flowDiagram');
+      flow.style.display = 'block';
+      flow.innerHTML = renderFlow(s.nodes, s.arrows);
+      document.querySelectorAll('.samples button').forEach((b,i) => b.classList.toggle('active', i === idx));
+    }
+
+    function setStatus(msg, type) {
+      const el = document.getElementById('statusPill');
+      el.className = `status-pill ${type}`;
+      const elapsed = startTime ? ` · ${Math.round((Date.now() - startTime) / 1000)}s` : '';
+      el.textContent = msg + elapsed;
+    }
+
+    async function submitTask() {
+      const apiUrl = document.getElementById('apiUrl').value.trim();
+      const task = document.getElementById('task').value.trim();
+      const sim = document.getElementById('simToggle').checked;
+      if (!task) return;
+      if (!sim && !apiUrl) { showModal(); return; }
+
+      document.getElementById('submitBtn').disabled = true;
+      document.getElementById('sidebar').innerHTML = '<div class="empty">Generating...</div>';
+      document.getElementById('editor').innerHTML = '<div class="empty">Waiting for agent...</div>';
+      startTime = Date.now();
+      setStatus('⏳ Submitting...', 'running');
+
+      if (sim) { runSimulation(); return; }
+
+      try {
+        const res = await fetch(`${apiUrl}/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: 'example/my-service', task_description: task }) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setStatus('⏳ Agent generating code...', 'running');
+        pollForResults(apiUrl);
+      } catch (e) { setStatus(`❌ ${e.message}`, 'error'); document.getElementById('submitBtn').disabled = false; }
+    }
+
+    function showModal() { document.getElementById('modal').style.display = 'flex'; }
+    function hideModal() { document.getElementById('modal').style.display = 'none'; }
+    function enableSim() { document.getElementById('simToggle').checked = true; hideModal(); }
+    function connectApi() {
+      const url = document.getElementById('apiUrlInput').value.trim();
+      if (!url) return;
+      document.getElementById('apiUrl').value = url;
+      hideModal();
+    }
+
+    // Show modal when simulation is toggled off and no API URL set
+    document.getElementById('simToggle').addEventListener('change', function() {
+      if (!this.checked && !document.getElementById('apiUrl').value.trim()) { showModal(); }
+    });
+
+    function runSimulation() {
+      const steps = [
+        { msg: '⏳ Orchestrator: validating task...', delay: 800 },
+        { msg: '⏳ Orchestrator: starting AgentCore session...', delay: 1500 },
+        { msg: '⏳ Agent: invoking Bedrock...', delay: 2500 },
+        { msg: '⏳ Agent: writing files to S3...', delay: 1000 },
+        { msg: '⏳ Agent: sending callback to orchestrator...', delay: 500 },
+      ];
+      let i = 0;
+      function next() {
+        if (i < steps.length) {
+          setStatus(steps[i].msg, 'running');
+          setTimeout(() => { i++; next(); }, steps[i].delay);
+        } else {
+          const files = getSimFiles();
+          setStatus(`✅ ${files.length} files generated`, 'done');
+          renderTree(files);
+          showFile(files.sort((a,b) => a.path.localeCompare(b.path))[0]);
+          document.getElementById('submitBtn').disabled = false;
+        }
+      }
+      next();
+    }
+
+    function getSimFiles() {
+      const idx = document.querySelector('.samples button.active') ? [...document.querySelectorAll('.samples button')].findIndex(b => b.classList.contains('active')) : 0;
+      return simFiles[idx] || simFiles[0];
+    }
+
+    const simFiles = [
+      // 0: Backlog overnight — type hints
+      [
+        { path: 'utils/strings.py', content: `from typing import Optional\n\n\ndef slugify(text: str, separator: str = "-") -> str:\n    """Convert text to URL-friendly slug."""\n    return text.lower().strip().replace(" ", separator)\n\n\ndef truncate(text: str, max_length: int, suffix: str = "...") -> str:\n    """Truncate text to max_length, adding suffix if truncated."""\n    if len(text) <= max_length:\n        return text\n    return text[: max_length - len(suffix)] + suffix\n\n\ndef parse_bool(value: Optional[str]) -> Optional[bool]:\n    """Parse a string to boolean, returning None for invalid input."""\n    if value is None:\n        return None\n    return value.lower() in ("true", "1", "yes")\n` },
+        { path: 'utils/dates.py', content: `from datetime import datetime, timezone\nfrom typing import Optional\n\n\ndef utc_now() -> datetime:\n    """Return current UTC datetime."""\n    return datetime.now(timezone.utc)\n\n\ndef format_iso(dt: Optional[datetime]) -> Optional[str]:\n    """Format datetime as ISO 8601 string."""\n    if dt is None:\n        return None\n    return dt.isoformat()\n\n\ndef days_between(start: datetime, end: datetime) -> int:\n    """Return number of days between two datetimes."""\n    return (end - start).days\n` },
+        { path: 'utils/py.typed', content: `` },
+        { path: 'utils/__init__.py', content: `from utils.strings import slugify, truncate, parse_bool\nfrom utils.dates import utc_now, format_iso, days_between\n\n__all__ = ["slugify", "truncate", "parse_bool", "utc_now", "format_iso", "days_between"]\n` },
+      ],
+      // 1: Coverage bot — tests
+      [
+        { path: 'tests/test_payment_service.py', content: `import pytest\nfrom unittest.mock import Mock, patch\nfrom services.payment import PaymentService\n\n\n@pytest.fixture\ndef stripe_mock():\n    return Mock()\n\n\n@pytest.fixture\ndef service(stripe_mock):\n    return PaymentService(client=stripe_mock)\n\n\ndef test_successful_charge(service, stripe_mock):\n    stripe_mock.charges.create.return_value = {"id": "ch_123", "status": "succeeded"}\n    result = service.charge(amount=1000, currency="usd", customer_id="cus_1")\n    assert result["status"] == "succeeded"\n    stripe_mock.charges.create.assert_called_once()\n\n\ndef test_insufficient_funds(service, stripe_mock):\n    stripe_mock.charges.create.side_effect = Exception("insufficient_funds")\n    with pytest.raises(Exception, match="insufficient_funds"):\n        service.charge(amount=99999, currency="usd", customer_id="cus_1")\n\n\ndef test_expired_card(service, stripe_mock):\n    stripe_mock.charges.create.side_effect = Exception("expired_card")\n    with pytest.raises(Exception, match="expired_card"):\n        service.charge(amount=500, currency="usd", customer_id="cus_2")\n\n\ndef test_refund(service, stripe_mock):\n    stripe_mock.refunds.create.return_value = {"id": "re_123", "status": "succeeded"}\n    result = service.refund(charge_id="ch_123")\n    assert result["status"] == "succeeded"\n\n\ndef test_idempotency_key(service, stripe_mock):\n    stripe_mock.charges.create.return_value = {"id": "ch_123", "status": "succeeded"}\n    service.charge(amount=1000, currency="usd", customer_id="cus_1", idempotency_key="key_abc")\n    call_kwargs = stripe_mock.charges.create.call_args[1]\n    assert call_kwargs["idempotency_key"] == "key_abc"\n` },
+        { path: 'tests/conftest.py', content: `import pytest\n\n\n@pytest.fixture(autouse=True)\ndef reset_state():\n    """Reset any global state between tests."""\n    yield\n` },
+      ],
+      // 2: Dep upgrade — requests to httpx
+      [
+        { path: 'src/http_client.py', content: `import httpx\nfrom typing import Any\n\n\nDEFAULT_TIMEOUT = httpx.Timeout(10.0, connect=5.0)\nMAX_RETRIES = 3\n\n\ndef get(url: str, params: dict | None = None, headers: dict | None = None) -> dict:\n    """Make a GET request with retry logic."""\n    transport = httpx.HTTPTransport(retries=MAX_RETRIES)\n    with httpx.Client(transport=transport, timeout=DEFAULT_TIMEOUT) as client:\n        response = client.get(url, params=params, headers=headers)\n        response.raise_for_status()\n        return response.json()\n\n\ndef post(url: str, json: Any = None, headers: dict | None = None) -> dict:\n    """Make a POST request with retry logic."""\n    transport = httpx.HTTPTransport(retries=MAX_RETRIES)\n    with httpx.Client(transport=transport, timeout=DEFAULT_TIMEOUT) as client:\n        response = client.post(url, json=json, headers=headers)\n        response.raise_for_status()\n        return response.json()\n` },
+        { path: 'requirements.txt', content: `httpx>=0.27.0\n` },
+        { path: 'tests/test_http_client.py', content: `import pytest\nimport httpx\nfrom unittest.mock import patch\nfrom src.http_client import get, post\n\n\ndef test_get_success(httpx_mock):\n    httpx_mock.add_response(json={"ok": True})\n    result = get("https://api.example.com/data")\n    assert result == {"ok": True}\n\n\ndef test_post_success(httpx_mock):\n    httpx_mock.add_response(json={"id": 1})\n    result = post("https://api.example.com/items", json={"name": "test"})\n    assert result == {"id": 1}\n\n\ndef test_timeout_raises():\n    with pytest.raises(httpx.ConnectTimeout):\n        get("https://10.255.255.1/timeout")\n` },
+      ],
+      // 3: Slack request — new endpoint
+      [
+        { path: 'src/routes/orders.ts', content: `import { Router, Request, Response } from "express";\nimport { z } from "zod";\nimport { validate } from "../middleware/validate";\n\nconst router = Router();\n\nconst OrderSchema = z.object({\n  product_id: z.string(),\n  quantity: z.number().int().positive(),\n  customer_id: z.string(),\n});\n\nlet orders: any[] = [];\n\nrouter.get("/", (req: Request, res: Response) => {\n  res.json({ orders });\n});\n\nrouter.get("/:id", (req: Request, res: Response) => {\n  const order = orders.find((o) => o.id === req.params.id);\n  if (!order) return res.status(404).json({ error: "Not found" });\n  res.json(order);\n});\n\nrouter.post("/", validate(OrderSchema), (req: Request, res: Response) => {\n  const order = { id: String(orders.length + 1), ...req.body, status: "pending" };\n  orders.push(order);\n  res.status(201).json(order);\n});\n\nrouter.delete("/:id", (req: Request, res: Response) => {\n  orders = orders.filter((o) => o.id !== req.params.id);\n  res.status(204).send();\n});\n\nexport default router;\n` },
+        { path: 'src/middleware/validate.ts', content: `import { Request, Response, NextFunction } from "express";\nimport { ZodSchema } from "zod";\n\nexport function validate(schema: ZodSchema) {\n  return (req: Request, res: Response, next: NextFunction) => {\n    const result = schema.safeParse(req.body);\n    if (!result.success) {\n      return res.status(400).json({ errors: result.error.flatten().fieldErrors });\n    }\n    req.body = result.data;\n    next();\n  };\n}\n` },
+        { path: 'tests/orders.test.ts', content: `import request from "supertest";\nimport app from "../src/app";\n\ndescribe("GET /orders", () => {\n  it("returns empty list", async () => {\n    const res = await request(app).get("/orders");\n    expect(res.status).toBe(200);\n    expect(res.body.orders).toEqual([]);\n  });\n});\n\ndescribe("POST /orders", () => {\n  it("creates an order", async () => {\n    const res = await request(app)\n      .post("/orders")\n      .send({ product_id: "p1", quantity: 2, customer_id: "c1" });\n    expect(res.status).toBe(201);\n    expect(res.body.status).toBe("pending");\n  });\n\n  it("rejects invalid input", async () => {\n    const res = await request(app).post("/orders").send({ quantity: -1 });\n    expect(res.status).toBe(400);\n  });\n});\n` },
+      ],
+      // 4: Error tracker — bug fix
+      [
+        { path: 'src/events/processor.ts', content: `import { Queue, DLQ } from "./queue";\nimport { logger } from "../logger";\n\nconst MAX_RETRIES = 5;\nconst BASE_DELAY_MS = 1000;\n\nexport async function processEvent(event: any): Promise<void> {\n  let attempt = 0;\n\n  while (attempt < MAX_RETRIES) {\n    try {\n      await handleEvent(event);\n      return;\n    } catch (error) {\n      attempt++;\n      const delay = BASE_DELAY_MS * Math.pow(2, attempt);\n      logger.warn(\`Retry \${attempt}/\${MAX_RETRIES} in \${delay}ms\`, { event_id: event.id });\n\n      if (attempt >= MAX_RETRIES) {\n        await sendToDLQ(event, error);\n        return;\n      }\n      await sleep(delay);\n    }\n  }\n}\n\nasync function sendToDLQ(event: any, error: any): Promise<void> {\n  logger.error("Moving to DLQ after max retries", { event_id: event.id, error });\n  await DLQ.push({ event, error: String(error), failed_at: new Date().toISOString() });\n  await alertOnRepeatedFailures(event);\n}\n\nasync function alertOnRepeatedFailures(event: any): Promise<void> {\n  const recentFailures = await DLQ.countSince(Date.now() - 300_000);\n  if (recentFailures >= 5) {\n    logger.critical("DLQ threshold exceeded — 5+ failures in 5 minutes");\n    // Trigger PagerDuty / SNS alert\n  }\n}\n\nfunction sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }\nfunction handleEvent(event: any) { /* existing handler */ }\n` },
+        { path: 'src/events/queue.ts', content: `export interface DLQEntry {\n  event: any;\n  error: string;\n  failed_at: string;\n}\n\nclass DeadLetterQueue {\n  private entries: DLQEntry[] = [];\n\n  async push(entry: DLQEntry): Promise<void> {\n    this.entries.push(entry);\n  }\n\n  async countSince(timestamp: number): Promise<number> {\n    return this.entries.filter(e => new Date(e.failed_at).getTime() > timestamp).length;\n  }\n\n  async drain(): Promise<DLQEntry[]> {\n    const items = [...this.entries];\n    this.entries = [];\n    return items;\n  }\n}\n\nexport const DLQ = new DeadLetterQueue();\nexport const Queue = { /* existing queue implementation */ };\n` },
+      ],
+      // 5: Fan-out patch — Node upgrade
+      [
+        { path: '.nvmrc', content: `22.12.0\n` },
+        { path: 'package.json', content: `{\n  "name": "my-service",\n  "version": "2.0.0",\n  "engines": {\n    "node": ">=22.0.0"\n  },\n  "scripts": {\n    "start": "node src/index.js",\n    "test": "jest",\n    "lint": "eslint src/"\n  }\n}\n` },
+        { path: 'Dockerfile', content: `FROM node:22-slim\n\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --production\n\nCOPY src/ ./src/\n\nEXPOSE 3000\nCMD ["node", "src/index.js"]\n` },
+        { path: '.github/workflows/ci.yml', content: `name: CI\n\non:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version-file: ".nvmrc"\n      - run: npm ci\n      - run: npm run lint\n      - run: npm test\n      - run: docker build -t my-service .\n` },
+        { path: 'README.md', content: "# My Service\n\nRequires Node.js 22+. See `.nvmrc` for exact version.\n\n## Setup\n\n```bash\nnvm use\nnpm install\nnpm start\n```\n" },
+      ],
+    ];
+
+    function pollForResults(apiUrl) {
+      let attempts = 0, knownTasks = null;
+      pollTimer = setInterval(async () => {
+        attempts++;
+        setStatus('⏳ Agent generating code...', 'running');
+        try {
+          const res = await fetch(`${apiUrl}/results`);
+          const data = await res.json();
+          const tasks = data.tasks || [];
+          if (knownTasks === null) { knownTasks = new Set(tasks); return; }
+          const newTask = tasks.find(t => !knownTasks.has(t));
+          if (newTask) {
+            const filesRes = await fetch(`${apiUrl}/results?task_id=${newTask}`);
+            const filesData = await filesRes.json();
+            if (filesData.files && filesData.files.length > 0) {
+              clearInterval(pollTimer);
+              setStatus(`✅ ${filesData.files.length} files generated`, 'done');
+              renderTree(filesData.files);
+              showFile(filesData.files.sort((a,b) => a.path.localeCompare(b.path))[0]);
+              document.getElementById('submitBtn').disabled = false;
+              return;
+            }
+          }
+        } catch (e) {}
+        if (attempts > 60) { clearInterval(pollTimer); setStatus('⏱ Timeout', 'error'); document.getElementById('submitBtn').disabled = false; }
+      }, 5000);
+    }
+
+    function renderTree(files) {
+      const tree = {};
+      files.forEach(f => { const parts = f.path.split('/'); let node = tree; parts.forEach((p, i) => { if (i === parts.length - 1) node[p] = f; else { node[p] = node[p] || {}; node = node[p]; } }); });
+      const sidebar = document.getElementById('sidebar');
+      sidebar.innerHTML = '';
+      renderNode(tree, sidebar);
+    }
+
+    function renderNode(node, container) {
+      Object.entries(node).sort(([a,av],[b,bv]) => { const ad = !av.content, bd = !bv.content; if (ad !== bd) return ad ? -1 : 1; return a.localeCompare(b); }).forEach(([name, value]) => {
+        if (value.content !== undefined) {
+          const el = document.createElement('div'); el.className = 'tree-item'; el.textContent = `📄 ${name}`;
+          el.onclick = () => { document.querySelectorAll('.tree-item.active').forEach(e => e.classList.remove('active')); el.classList.add('active'); showFile(value); };
+          container.appendChild(el);
+        } else {
+          const folder = document.createElement('div'); folder.className = 'tree-item folder'; folder.textContent = `📁 ${name}`;
+          container.appendChild(folder);
+          const contents = document.createElement('div'); contents.className = 'tree-folder-contents'; container.appendChild(contents);
+          renderNode(value, contents);
+        }
+      });
+    }
+
+    function showFile(file) {
+      const ext = file.path.split('.').pop();
+      const editor = document.getElementById('editor');
+      editor.innerHTML = `<div class="editor-header">📄 ${file.path}</div><pre><code class="language-${ext}">${file.content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`;
+      editor.querySelector('code') && hljs.highlightElement(editor.querySelector('code'));
+    }
+
+    // Auto-select first sample
+    selectSample(0);
+  </script>
+</body>
+</html>

@@ -52,6 +52,7 @@ Examples are organized by industry vertical to demonstrate domain-specific use c
 | Example | Description | Technologies |
 |---------|-------------|--------------|
 | [Fraud Detection](./Industry/Financial%20Services%20(FSI)/FraudDetection/) | Multi-step transaction processing with risk scoring, human-in-the-loop verification, and conditional workflow branching | Lambda, TypeScript, AWS CDK, SAM |
+| [Payment Processing](./Industry%20Solutions/Financial%20Services%20(FSI)/PaymentProcessing/) | Real Stripe card payment with 3D Secure authentication — suspends mid-execution waiting for a webhook callback, resumes on confirmation, and times out gracefully | Lambda, Python, SAM, Powertools |
 
 ### Retail
 

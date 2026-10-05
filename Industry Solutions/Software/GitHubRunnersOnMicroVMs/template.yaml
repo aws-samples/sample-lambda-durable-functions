@@ -1,0 +1,496 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Ephemeral GitHub self-hosted runners on AWS Lambda MicroVMs, orchestrated by a
+  Lambda durable function using the callback pattern. GitHub webhook -> API
+  Gateway -> durable orchestrator (RunMicrovm, suspend on waitForCallback,
+  TerminateMicrovm on resume). The MicroVM image is built in-stack via a
+  CloudFormation custom resource (no native MicroVM resource type exists); its
+  ARN/version are published to Parameter Store. See README.md for the full flow.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: gh-microvm-runners
+    Description: Prefix used for resource names and SSM parameter paths.
+
+  CodeArtifactBucket:
+    Type: String
+    Description: >
+      Name of an existing S3 bucket (same region as this stack) that holds the
+      zipped runner app (a Dockerfile at the zip root). See runner-app/ + README.
+
+  CodeArtifactKey:
+    Type: String
+    Default: runner-app.zip
+    Description: S3 key of the zipped runner app within CodeArtifactBucket.
+
+  BaseImageArn:
+    Type: String
+    Default: ''
+    Description: >
+      Managed MicroVM base image ARN (e.g.
+      arn:aws:lambda:<region>:aws:microvm-image:al2023-1). Leave blank to have the
+      custom resource resolve the latest managed base image at create time.
+
+  CallbackTimeoutSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 60
+    MaxValue: 86400
+    Description: >
+      How long the durable function waits for the runner to call back before the
+      execution fails and the VM is torn down. Default 1h; raise for long CI jobs.
+
+  RunnerPort:
+    Type: Number
+    Default: 8080
+    Description: Port the runner app listens on for proxied HTTPS traffic.
+
+  WebhookSecretParamName:
+    Type: String
+    Default: /gh-microvm-runners/github/webhook-secret
+    AllowedPattern: ^/[A-Za-z0-9._/-]+$
+    Description: >
+      Name/path of a PRE-EXISTING SSM SecureString parameter holding the GitHub
+      webhook secret. CloudFormation cannot create SecureString parameters, so
+      create it yourself before deploy, e.g.:
+        aws ssm put-parameter --type SecureString \
+          --name /gh-microvm-runners/github/webhook-secret --value '<secret>'
+      and set the SAME secret in the GitHub webhook config. The dispatch Lambda
+      reads this to verify X-Hub-Signature-256 on every delivery.
+
+  AppCredentialsParamName:
+    Type: String
+    Default: /gh-microvm-runners/github/app-credentials
+    AllowedPattern: ^/[A-Za-z0-9._/-]+$
+    Description: >
+      Name/path of a PRE-EXISTING SSM SecureString parameter holding the GitHub
+      App credentials as JSON {appId, installationId, privateKey}. Used by the
+      dispatch Lambda to mint JIT runner configs (generate-jitconfig). Create it
+      yourself (CloudFormation cannot create SecureString params). Until it
+      exists, dispatch skips minting and sends an empty jitConfig.
+
+  RequiredRunnerLabel:
+    Type: String
+    Default: lambda-microvms
+    Description: Label a workflow_job must carry to trigger a JIT MicroVM runner.
+
+  RunnerGroupId:
+    Type: Number
+    Default: 1
+    Description: GitHub runner group id the JIT runner registers into.
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: python3.13
+    Tracing: Active
+    Architectures:
+      - arm64
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # Parameter Store: runtime configuration the orchestrator reads.
+  # ---------------------------------------------------------------------------
+  BaseImageParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/microvm/base-image-arn
+      Type: String
+      Value: !If [HasBaseImage, !Ref BaseImageArn, 'resolve-latest']
+
+  CallbackTimeoutParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/orchestrator/callback-timeout-seconds
+      Type: String
+      Value: !Ref CallbackTimeoutSeconds
+
+  RunnerPortParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/microvm/runner-port
+      Type: String
+      Value: !Ref RunnerPort
+
+  # The image ARN/version are written here by the MicrovmImage custom resource.
+  ImageArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/microvm/image-arn
+      Type: String
+      Value: !GetAtt MicrovmImage.ImageArn
+
+  ImageVersionParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ProjectName}/microvm/image-version
+      Type: String
+      Value: !GetAtt MicrovmImage.ImageVersion
+
+  # ---------------------------------------------------------------------------
+  # IAM roles.
+  # ---------------------------------------------------------------------------
+
+  # Assumed by Lambda DURING MicroVM image build (S3 read of the artifact + logs).
+  MicrovmBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-microvm-build
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:*
+      Policies:
+        - PolicyName: build
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadCodeArtifact
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${CodeArtifactBucket}/${CodeArtifactKey}
+              - Sid: BuildLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda-microvms/*
+
+  # Assumed AT RUNTIME by the running MicroVM (the GitHub runner process).
+  # Scope this down to only what your runner workloads actually need.
+  MicrovmExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-microvm-exec
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:*
+      Policies:
+        - PolicyName: runtime-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda-microvms/*
+
+  # ---------------------------------------------------------------------------
+  # Custom-resource Lambda that creates/deletes the MicroVM IMAGE.
+  # ---------------------------------------------------------------------------
+  ImageResourceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-image-resource
+      Handler: handler.handler
+      CodeUri: functions/image_resource/
+      Timeout: 900
+      Policies:
+        - Statement:
+            - Sid: ManageMicrovmImage
+              Effect: Allow
+              Action:
+                - lambda:CreateMicrovmImage
+                - lambda:DeleteMicrovmImage
+                - lambda:DeleteMicrovmImageVersion
+                - lambda:GetMicrovmImage
+                - lambda:ListManagedMicrovmImages
+              Resource: '*'
+            - Sid: PassNetworkConnectors
+              Effect: Allow
+              # CreateMicrovmImage passes the default INTERNET_EGRESS connector
+              # during the build, so this is required.
+              Action: lambda:PassNetworkConnector
+              Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:*
+            - Sid: PassBuildRole
+              Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt MicrovmBuildRole.Arn
+              Condition:
+                StringEquals:
+                  iam:PassedToService: lambda.amazonaws.com
+
+  MicrovmImage:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt ImageResourceFunction.Arn
+      Name: !Sub ${ProjectName}-runner
+      BuildRoleArn: !GetAtt MicrovmBuildRole.Arn
+      CodeArtifactUri: !Sub s3://${CodeArtifactBucket}/${CodeArtifactKey}
+      BaseImageArn: !If [HasBaseImage, !Ref BaseImageArn, '']
+      RunnerPort: !Ref RunnerPort
+
+  # ---------------------------------------------------------------------------
+  # Durable orchestrator Lambda (RunMicrovm -> token -> waitForCallback -> Terminate).
+  # Uses a native AWS::Lambda::Function so DurableConfig passes through, and is
+  # invoked through an alias as durable functions require.
+  # ---------------------------------------------------------------------------
+  OrchestratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-orchestrator
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicDurableExecutionRolePolicy
+      Policies:
+        - PolicyName: orchestrate-microvms
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: RunAndManageMicrovms
+                Effect: Allow
+                Action:
+                  - lambda:RunMicrovm
+                  - lambda:SuspendMicrovm
+                  - lambda:ResumeMicrovm
+                  - lambda:TerminateMicrovm
+                  - lambda:GetMicrovm
+                  - lambda:CreateMicrovmAuthToken
+                Resource: '*'
+              - Sid: PassNetworkConnectors
+                Effect: Allow
+                # RunMicrovm passes the default HTTP_INGRESS/INTERNET_EGRESS
+                # connectors even when none are specified, so this is required.
+                Action: lambda:PassNetworkConnector
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:*
+              - Sid: PassExecutionRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt MicrovmExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+              - Sid: ReadConfig
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/*
+              - Sid: Trace
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: '*'
+
+  OrchestratorFunction:
+    Type: AWS::Lambda::Function
+    Metadata:
+      cfn-lint:
+        config:
+          # DurableConfig is a real, documented AWS::Lambda::Function property
+          # (see the Lambda durable functions IaC guide). Older cfn-lint resource
+          # specs don't know it yet, so suppress the false "unexpected property".
+          ignore_checks:
+            - E3002
+    Properties:
+      # No explicit FunctionName: setting one blocks the replacement that adding
+      # DurableConfig triggers (per the Lambda IaC guidance).
+      Handler: handler.handler
+      Runtime: python3.13
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt OrchestratorRole.Arn
+      TracingConfig:
+        Mode: Active
+      Code: functions/orchestrator/
+      Layers:
+        - !Ref DurableSdkLayer
+      DurableConfig:
+        ExecutionTimeout: !Ref CallbackTimeoutSeconds
+        RetentionPeriodInDays: 7
+      Environment:
+        Variables:
+          EXECUTION_ROLE_ARN: !GetAtt MicrovmExecutionRole.Arn
+          IMAGE_ARN_PARAM: !Ref ImageArnParam
+          IMAGE_VERSION_PARAM: !Ref ImageVersionParam
+          CALLBACK_TIMEOUT_PARAM: !Ref CallbackTimeoutParam
+          RUNNER_PORT_PARAM: !Ref RunnerPortParam
+
+  # The durable execution SDK, delivered as a layer. Built by SAM via the
+  # layer's Makefile (BuildMethod: makefile) so `sam build` runs pip for us even
+  # though the orchestrator itself is a native AWS::Lambda::Function.
+  DurableSdkLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      LayerName: !Sub ${ProjectName}-durable-sdk
+      ContentUri: layers/durable_sdk/
+      CompatibleRuntimes:
+        - python3.13
+      CompatibleArchitectures:
+        - arm64
+
+  OrchestratorVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref OrchestratorFunction
+
+  OrchestratorAlias:
+    Type: AWS::Lambda::Alias
+    Properties:
+      FunctionName: !Ref OrchestratorFunction
+      FunctionVersion: !GetAtt OrchestratorVersion.Version
+      Name: live
+
+  # ---------------------------------------------------------------------------
+  # Callback Lambda: the runner hits this when its job is done; it resumes the
+  # suspended durable execution via SendDurableExecutionCallbackSuccess/Failure.
+  # ---------------------------------------------------------------------------
+  CallbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-callback
+      Handler: handler.handler
+      CodeUri: functions/callback/
+      Policies:
+        - Statement:
+            - Sid: SendDurableCallback
+              Effect: Allow
+              Action:
+                - lambda:SendDurableExecutionCallbackSuccess
+                - lambda:SendDurableExecutionCallbackFailure
+              # The callback resource is the VERSION-qualified function ARN with a
+              # /durable-execution/<exec>/<id> suffix (the alias resolves to a
+              # version at runtime), so the alias/unqualified ARNs alone don't
+              # match. Cover all versions + the durable-execution sub-resource.
+              Resource:
+                - !Ref OrchestratorAlias
+                - !GetAtt OrchestratorFunction.Arn
+                - !Sub ${OrchestratorFunction.Arn}:*
+                - !Sub ${OrchestratorFunction.Arn}:*/durable-execution/*
+      Events:
+        Callback:
+          Type: Api
+          Properties:
+            RestApiId: !Ref RunnerApi
+            Path: /callback
+            Method: post
+
+  # ---------------------------------------------------------------------------
+  # Dispatch Lambda: receives the GitHub webhook and starts a durable execution
+  # by invoking the orchestrator alias asynchronously.
+  # ---------------------------------------------------------------------------
+  DispatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-dispatch
+      Handler: handler.handler
+      CodeUri: functions/dispatch/
+      Timeout: 20
+      Environment:
+        Variables:
+          ORCHESTRATOR_ALIAS_ARN: !Ref OrchestratorAlias
+          WEBHOOK_SECRET_PARAM: !Ref WebhookSecretParamName
+          APP_CREDENTIALS_PARAM: !Ref AppCredentialsParamName
+          REQUIRED_RUNNER_LABEL: !Ref RequiredRunnerLabel
+          RUNNER_GROUP_ID: !Ref RunnerGroupId
+      Policies:
+        - Statement:
+            - Sid: StartOrchestration
+              Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Ref OrchestratorAlias
+            - Sid: ReadSecrets
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${WebhookSecretParamName}
+                - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AppCredentialsParamName}
+            - Sid: DecryptSecrets
+              Effect: Allow
+              Action: kms:Decrypt
+              # SecureString params are encrypted with the account's default SSM
+              # key (alias/aws/ssm) unless you used a CMK. Scope via the SSM
+              # ViaService condition so this grant only works through SSM.
+              Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+      Events:
+        Dispatch:
+          Type: Api
+          Properties:
+            RestApiId: !Ref RunnerApi
+            Path: /dispatch
+            Method: post
+
+  # ---------------------------------------------------------------------------
+  # API Gateway (REST) fronting /dispatch and /callback with access logging.
+  # ---------------------------------------------------------------------------
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigw/${ProjectName}
+      RetentionInDays: 30
+
+  RunnerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub ${ProjectName}-api
+      StageName: prod
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp",
+          "method":"$context.httpMethod","path":"$context.resourcePath",
+          "status":"$context.status","error":"$context.error.message"}
+      MethodSettings:
+        - ResourcePath: /*
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 50
+          ThrottlingRateLimit: 100
+
+Conditions:
+  HasBaseImage: !Not [!Equals [!Ref BaseImageArn, '']]
+
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL of the runner API.
+    Value: !Sub https://${RunnerApi}.execute-api.${AWS::Region}.amazonaws.com/prod
+  DispatchUrl:
+    Description: POST GitHub webhook (workflow_job) here to start a runner.
+    Value: !Sub https://${RunnerApi}.execute-api.${AWS::Region}.amazonaws.com/prod/dispatch
+  CallbackUrl:
+    Description: Runner POSTs here when its job is done.
+    Value: !Sub https://${RunnerApi}.execute-api.${AWS::Region}.amazonaws.com/prod/callback
+  OrchestratorAliasArn:
+    Description: Durable orchestrator alias ARN.
+    Value: !Ref OrchestratorAlias
+  MicrovmImageArn:
+    Description: ARN of the MicroVM image built by the custom resource.
+    Value: !GetAtt MicrovmImage.ImageArn

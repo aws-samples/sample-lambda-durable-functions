@@ -1,0 +1,15 @@
+# Build / SAM
+.aws-sam/
+*.zip
+
+# Secrets / local env (never commit)
+.env
+*.pem
+samconfig.toml
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store

@@ -1,0 +1,3 @@
+# RS256 signing of the GitHub App JWT. The [crypto] extra pulls `cryptography`,
+# which has native wheels — sam build installs them for the Lambda arch.
+PyJWT[crypto]>=2.8.0

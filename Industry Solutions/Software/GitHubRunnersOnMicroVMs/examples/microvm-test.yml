@@ -1,0 +1,11 @@
+# Sample workflow that targets the ephemeral MicroVM self-hosted runner.
+# Copy this to .github/workflows/ in a repo the GitHub App is installed on.
+# The `lambda-microvms` label is what the dispatcher matches on to mint a runner
+# (override via the RequiredRunnerLabel stack parameter).
+name: microvm-test
+on: push
+jobs:
+  hello:
+    runs-on: [self-hosted, lambda-microvms]
+    steps:
+      - run: echo "hello from an ephemeral MicroVM runner"
